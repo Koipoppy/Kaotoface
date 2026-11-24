@@ -21,7 +21,18 @@ small = ImageFont.truetype(JOST, 18)
 icons = ImageFont.truetype(PHOSPHOR, 44)
 
 # Left-hand wordmark and tagline.
-draw.text((120, 112), "KaoToFace", font=wordmark, fill=INK)
+word = "KaoToFace"
+draw.text((120, 112), word, font=wordmark, fill=INK)
+# Replace the two lowercase o's with solid red circles.
+for i, ch in enumerate(word):
+    if ch != "o":
+        continue
+    x = 120 + draw.textlength(word[:i], font=wordmark)
+    box = draw.textbbox((x, 112), ch, font=wordmark)
+    cx = (box[0] + box[2]) / 2
+    cy = (box[1] + box[3]) / 2
+    r = max(box[2] - box[0], box[3] - box[1]) / 2 + 2
+    draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(217, 45, 32))
 draw.text((124, 278), "让每一句话，都被听懂。", font=tagline, fill=INK)
 
 # Letter-spaced micro line.
