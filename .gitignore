@@ -18,3 +18,9 @@ tools/keystore/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local test captures
+/tools/*.png
+/tools/*.mp4
+/tools/ui*.xml
+/tools/rj*.json
