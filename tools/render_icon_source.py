@@ -183,29 +183,35 @@ def main() -> None:
     launcher_preview.save(TOOLS / "icon_preview.png")
 
     # Equal-size face comparison: source render (left) vs the installed APK's
-    # launcher rendering, cropped to the same dark circle (right).
-    actual = Image.open(TOOLS / "actual_icon_big_nose.png").convert("RGB")
-    dark = np.array(actual.convert("L")) < 100
-    ys, xs = np.where(dark)
-    if len(xs) == 0:
-        raise SystemExit("could not find the dark icon in the launcher crop")
-    actual_circle = actual.crop(
-        (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
-    )
-    actual_circle = actual_circle.resize((1024, 1024), Image.LANCZOS)
+    # launcher rendering, cropped to the same dark circle (right). The actual
+    # capture is local-only, so skip it on a clean checkout.
+    actual_path = TOOLS / "actual_icon_current.png"
+    if actual_path.exists():
+        actual = Image.open(actual_path).convert("RGB")
+        dark = np.array(actual.convert("L")) < 100
+        ys, xs = np.where(dark)
+        if len(xs) == 0:
+            raise SystemExit("could not find the dark icon in the launcher crop")
+        actual_circle = actual.crop(
+            (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
+        )
+        actual_circle = actual_circle.resize((1024, 1024), Image.LANCZOS)
 
-    compare = Image.new("RGB", (2048, 1160), (255, 255, 255))
-    compare.paste(source, (0, 96))
-    compare.paste(actual_circle, (1024, 96))
-    draw = ImageDraw.Draw(compare)
-    font = ImageFont.truetype(str(ROOT / "app/src/main/res/font/jost.ttf"), 44)
-    draw.text((4, 24), "SOURCE  ·  VECTOR XML", font=font, fill=(10, 10, 10))
-    draw.text((1028, 24), "LAUNCHER  ·  INSTALLED APK", font=font, fill=(142, 142, 142))
-    compare.save(TOOLS / "icon_source_vs_actual.png")
-    compare.save(TOOLS / "icon_compare.png")
+        compare = Image.new("RGB", (2048, 1160), (255, 255, 255))
+        compare.paste(source, (0, 96))
+        compare.paste(actual_circle, (1024, 96))
+        draw = ImageDraw.Draw(compare)
+        font = ImageFont.truetype(str(ROOT / "app/src/main/res/font/jost.ttf"), 44)
+        draw.text((4, 24), "SOURCE  ·  VECTOR XML", font=font, fill=(10, 10, 10))
+        draw.text((1028, 24), "LAUNCHER  ·  INSTALLED APK", font=font, fill=(142, 142, 142))
+        compare.save(TOOLS / "icon_source_vs_actual.png")
+        compare.save(TOOLS / "icon_compare.png")
+        print("wrote tools/icon_source_vs_actual.png")
+    else:
+        print("actual icon capture not found; skipped comparison")
 
     print("wrote", source_svg.relative_to(ROOT), source_png.relative_to(ROOT))
-    print("wrote tools/icon_preview.png and tools/icon_source_vs_actual.png")
+    print("wrote tools/icon_preview.png")
 
 
 if __name__ == "__main__":
