@@ -6,13 +6,13 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
     <!-- left "eye": the English panel -->
-    <path android:pathData="M34,39 a7,7 0 0 1 14,0 v20 a7,7 0 0 1 -14,0 z">
+    <path android:pathData="M32,35 a7,7 0 0 1 14,0 v22 a7,7 0 0 1 -14,0 z">
         <aapt:attr name="android:fillColor">
             <gradient
-                android:startX="34"
-                android:startY="32"
-                android:endX="48"
-                android:endY="66"
+                android:startX="32"
+                android:startY="24"
+                android:endX="46"
+                android:endY="68"
                 android:type="linear">
                 <item android:color="#FFF4F4F4" android:offset="0" />
                 <item android:color="#FFD0D0D0" android:offset="1" />
@@ -20,13 +20,13 @@
         </aapt:attr>
     </path>
     <!-- right "eye": the Chinese panel -->
-    <path android:pathData="M60,43 a7,7 0 0 1 14,0 v17 a7,7 0 0 1 -14,0 z">
+    <path android:pathData="M62,39 a7,7 0 0 1 14,0 v19 a7,7 0 0 1 -14,0 z">
         <aapt:attr name="android:fillColor">
             <gradient
-                android:startX="60"
-                android:startY="36"
-                android:endX="74"
-                android:endY="67"
+                android:startX="62"
+                android:startY="28"
+                android:endX="76"
+                android:endY="69"
                 android:type="linear">
                 <item android:color="#FFB8B8B8" android:offset="0" />
                 <item android:color="#FF8C8C8C" android:offset="1" />
@@ -35,7 +35,7 @@
     </path>
     <!-- smile -->
     <path
-        android:pathData="M37.2,68.1 A22,22 0 0,0 70.8,68.1"
+        android:pathData="M37.3,73.9 A26,26 0 0,0 70.7,73.9"
         android:strokeColor="#F2F2F2"
         android:strokeLineCap="round"
         android:strokeWidth="3.4"
