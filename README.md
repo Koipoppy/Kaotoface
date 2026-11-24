@@ -1,4 +1,4 @@
-![KaoToFace — 让每一句话，都被听懂。](docs/banner.png)
+![KaoToFace — 让每一句话，都被听懂。](docs/hero.png)
 
 一台 Android 手机，两种语言，面对面实时翻译。
 
