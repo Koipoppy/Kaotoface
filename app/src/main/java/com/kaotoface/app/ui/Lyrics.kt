@@ -615,9 +615,9 @@ private fun EmptyState(
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    if (english) "请开始说话，译文会在这里出现" else "Speak now — 译文会在这里出现",
+                    if (english) "Speak now — translations will appear here." else "请开始说话，译文会在这里出现。",
                     color = TextLo,
-                    fontFamily = Han,
+                    fontFamily = if (english) Jost else Han,
                     fontSize = 10.5.sp,
                 )
             } else {
