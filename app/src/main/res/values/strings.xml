@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">颜面</string>
+    <string name="app_name_full">KaoToFace 颜面</string>
+    <string name="notification_channel">实时翻译</string>
+    <string name="notification_title">正在实时翻译</string>
+    <string name="notification_text">英 ↔ 中 · 轻触返回</string>
+    <string name="notification_room">房间 %1$s · 实时翻译</string>
+    <string name="notification_stop">停止</string>
+</resources>

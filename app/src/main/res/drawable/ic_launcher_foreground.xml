@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- left "eye": the English panel -->
+    <path android:pathData="M34,39 a7,7 0 0 1 14,0 v20 a7,7 0 0 1 -14,0 z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="34"
+                android:startY="32"
+                android:endX="48"
+                android:endY="66"
+                android:type="linear">
+                <item android:color="#FFF4F4F4" android:offset="0" />
+                <item android:color="#FFD0D0D0" android:offset="1" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- right "eye": the Chinese panel -->
+    <path android:pathData="M60,43 a7,7 0 0 1 14,0 v17 a7,7 0 0 1 -14,0 z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="60"
+                android:startY="36"
+                android:endX="74"
+                android:endY="67"
+                android:type="linear">
+                <item android:color="#FFB8B8B8" android:offset="0" />
+                <item android:color="#FF8C8C8C" android:offset="1" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- smile -->
+    <path
+        android:pathData="M43,75 Q54,84 65,75"
+        android:strokeColor="#F2F2F2"
+        android:strokeLineCap="round"
+        android:strokeWidth="3.4"
+        android:fillColor="#00000000" />
+    <path
+        android:fillColor="#44FFFFFF"
+        android:pathData="M53,28 a1.6,1.6 0 1 0 3.2,0 a1.6,1.6 0 1 0 -3.2,0 z" />
+</vector>

@@ -1,0 +1,20 @@
+# Android / Gradle
+.gradle/
+.kotlin/
+build/
+**/build/
+local.properties
+.idea/
+*.iml
+captures/
+
+# Release artifacts
+dist/
+*.apk
+
+# Local signing material
+tools/keystore/
+
+# OS
+.DS_Store
+Thumbs.db
