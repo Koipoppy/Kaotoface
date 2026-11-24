@@ -24,3 +24,4 @@ Thumbs.db
 /tools/*.mp4
 /tools/ui*.xml
 /tools/rj*.json
+*.apk.sha256

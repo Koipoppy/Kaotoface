@@ -184,6 +184,13 @@ docs/      截图
 ./gradlew assembleRelease   # 正式包；本地有签名密钥时自动签名
 ```
 
+构建完成后把正式包按版本命名放到**项目根目录**：
+
+```bash
+cp app/build/outputs/apk/release/app-release.apk ./KaoToFace-1.0.0.apk
+sha256sum KaoToFace-1.0.0.apk > KaoToFace-1.0.0.apk.sha256
+```
+
 仓库不包含签名密钥与密码。要在本地构建签名 release，请把 keystore 放到
 `tools/keystore/kaotoface.jks`（已加入 .gitignore），并设置环境变量：
 
