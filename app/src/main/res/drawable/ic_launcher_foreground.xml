@@ -1,46 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- left "eye": the English panel -->
-    <path android:pathData="M34,39 a7,7 0 0 1 14,0 v20 a7,7 0 0 1 -14,0 z">
-        <aapt:attr name="android:fillColor">
-            <gradient
-                android:startX="34"
-                android:startY="32"
-                android:endX="48"
-                android:endY="66"
-                android:type="linear">
-                <item android:color="#FFF4F4F4" android:offset="0" />
-                <item android:color="#FFD0D0D0" android:offset="1" />
-            </gradient>
-        </aapt:attr>
-    </path>
-    <!-- right "eye": the Chinese panel -->
-    <path android:pathData="M60,43 a7,7 0 0 1 14,0 v17 a7,7 0 0 1 -14,0 z">
-        <aapt:attr name="android:fillColor">
-            <gradient
-                android:startX="60"
-                android:startY="36"
-                android:endX="74"
-                android:endY="67"
-                android:type="linear">
-                <item android:color="#FFB8B8B8" android:offset="0" />
-                <item android:color="#FF8C8C8C" android:offset="1" />
-            </gradient>
-        </aapt:attr>
-    </path>
-    <!-- smile -->
+    <!-- The listening button: flat black circle with the line-art ear. -->
     <path
-        android:pathData="M43,75 Q54,84 65,75"
-        android:strokeColor="#F2F2F2"
-        android:strokeLineCap="round"
-        android:strokeWidth="3.4"
-        android:fillColor="#00000000" />
-    <path
-        android:fillColor="#44FFFFFF"
-        android:pathData="M53,28 a1.6,1.6 0 1 0 3.2,0 a1.6,1.6 0 1 0 -3.2,0 z" />
+        android:fillColor="#0A0A0A"
+        android:pathData="M54,22 a32,32 0 1,0 0,64 a32,32 0 1,0 0,-64 z" />
+    <group
+        android:scaleX="0.20"
+        android:scaleY="0.20"
+        android:translateX="28.4"
+        android:translateY="28.4">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M216,104a8,8,0,0,1-16,0,72,72,0,0,0-144,0c0,26.7,8.53,34.92,17.57,43.64C82.21,156,92,165.41,92,188a36,36,0,0,0,36,36c10.24,0,18.45-4.16,25.83-13.09a8,8,0,1,1,12.34,10.18C155.81,233.64,143,240,128,240a52.06,52.06,0,0,1-52-52c0-15.79-5.68-21.27-13.54-28.84C52.46,149.5,40,137.5,40,104a88,88,0,0,1,176,0Zm-38.13,57.08A8,8,0,0,0,166.93,164,8,8,0,0,1,152,160c0-9.33,4.82-15.76,10.4-23.2,6.37-8.5,13.6-18.13,13.6-32.8a48,48,0,0,0-96,0,8,8,0,0,0,16,0,32,32,0,0,1,64,0c0,9.33-4.82,15.76-10.4,23.2-6.37,8.5-13.6,18.13-13.6,32.8a24,24,0,0,0,44.78,12A8,8,0,0,0,177.87,161.08Z" />
+    </group>
 </vector>
