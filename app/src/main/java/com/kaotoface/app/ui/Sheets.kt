@@ -4,6 +4,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
 import android.text.InputType
+import com.kaotoface.app.BuildConfig
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -1076,7 +1077,7 @@ fun SettingsSheet(
         Spacer(Modifier.height(20.dp))
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(
-                "版本 1.0.0",
+                "版本 ${BuildConfig.VERSION_NAME}",
                 color = TextLo,
                 fontFamily = Jost,
                 fontSize = 9.5.sp,
