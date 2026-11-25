@@ -26,7 +26,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.sqrt
@@ -60,7 +59,6 @@ class SessionEngine(
     private var records: List<DiscussionRecord> = emptyList()
     private var currentRecordId: String? = null
     private val segments = Channel<Segment>(Channel.UNLIMITED)
-    private val pending = ConcurrentHashMap<Lang, String>()
 
     private var prepJob: Job? = null
     private var demoJob: Job? = null
@@ -73,6 +71,17 @@ class SessionEngine(
     private var joinJob: Job? = null
     private var lastJudgeSignature: String = ""
     private var lastJudgeAt: Long = 0L
+
+    // Streaming Vosk candidates. The live line is the currently spoken text;
+    // frozen lines stay in UiState.pending until DeepSeek returns.
+    private var liveEn = ""
+    private var liveZh = ""
+    private var groupEn = ""
+    private var groupZh = ""
+    private var groupConfEn = 0f
+    private var groupConfZh = 0f
+    private var groupId: String? = null
+    private var lastPartialAt = 0L
 
     init {
         val stored = recordsStore.load()
@@ -127,6 +136,7 @@ class SessionEngine(
                     throw ce
                 } catch (t: Throwable) {
                     Log.w(TAG, "segment failed", t)
+                    removePending(segment.id)
                     _state.update { it.copy(error = "翻译流程出错：${t.message ?: "未知错误"}") }
                 }
             }
@@ -148,7 +158,7 @@ class SessionEngine(
                 return
             }
         }
-        if (_state.value.room == null) beginRecord()
+        if (_state.value.room == null) beginRecord() else clearTransient()
         _state.update {
             it.copy(
                 phase = EnginePhase.PREPARING,
@@ -211,6 +221,7 @@ class SessionEngine(
         prepJob = null
         demoJob?.cancel()
         demoJob = null
+        clearTransient()
         audio?.stop()
         audio = null
         tts?.stop()
@@ -239,25 +250,164 @@ class SessionEngine(
             return
         }
         current?.release()
-        val fresh = VoskDual { lang, text -> onFinal(lang, text) }
+        val fresh = VoskDual(onPartial = ::onPartial, onFinal = ::onFinal)
         fresh.load(dirs.en, dirs.zh, onProgress)
         dual = fresh
     }
 
-    private fun onFinal(lang: Lang, text: String) {
+    private fun onPartial(lang: Lang, text: String) {
         val clean = text.trim()
-        if (clean.length < 1) return
-        pending[lang] = clean
-        if (debounceJob == null) {
-            debounceJob = scope.launch {
-                delay(700)
-                val en = pending.remove(Lang.EN).orEmpty()
-                val zh = pending.remove(Lang.ZH).orEmpty()
-                debounceJob = null
-                if (en.isBlank() && zh.isBlank()) return@launch
-                segments.send(Segment(en, zh))
+        if (clean.isEmpty()) return
+        if (lang == Lang.EN) liveEn = clean else liveZh = clean
+        // The group is already frozen and has a target buffer; don't let a
+        // trailing partial rewrite it. The next utterance starts a new live line.
+        if (groupId != null) return
+        val choice = chooseSource(liveEn, liveZh, 0f, 0f, preferredSource()) ?: return
+        val current = _state.value.live
+        if (current != null && current.source == choice.first && current.text == choice.second) return
+        val now = System.currentTimeMillis()
+        if (now - lastPartialAt < 90) return
+        lastPartialAt = now
+        val line = current?.copy(source = choice.first, text = choice.second)
+            ?: PendingLine(
+                id = UUID.randomUUID().toString(),
+                source = choice.first,
+                text = choice.second,
+                createdAt = now,
+            )
+        _state.update { it.copy(live = line) }
+    }
+
+    private fun onFinal(lang: Lang, text: String, confidence: Float) {
+        val clean = text.trim()
+        if (clean.isEmpty()) return
+        if (lang == Lang.EN) {
+            groupEn = clean
+            groupConfEn = confidence
+        } else {
+            groupZh = clean
+            groupConfZh = confidence
+        }
+        val choice = chooseSource(groupEn, groupZh, groupConfEn, groupConfZh, preferredSource()) ?: return
+        val id = groupId
+        if (id == null) {
+            val live = _state.value.live
+            val lineId = live?.id ?: UUID.randomUUID().toString()
+            val pendingLine = PendingLine(
+                id = lineId,
+                source = choice.first,
+                text = choice.second,
+                createdAt = live?.createdAt ?: System.currentTimeMillis(),
+            )
+            groupId = lineId
+            _state.update {
+                it.copy(
+                    live = null,
+                    pending = it.pending + pendingLine,
+                )
+            }
+            liveEn = ""
+            liveZh = ""
+            startDebounce()
+        } else {
+            // The other Vosk stream finalised within the same 700ms window.
+            // Keep one buffer row and update its source candidate.
+            _state.update { st ->
+                st.copy(
+                    pending = st.pending.map {
+                        if (it.id == id) it.copy(source = choice.first, text = choice.second) else it
+                    },
+                )
             }
         }
+    }
+
+    private fun startDebounce() {
+        if (debounceJob != null) return
+        debounceJob = scope.launch {
+            delay(700)
+            val id = groupId
+            val en = groupEn
+            val zh = groupZh
+            groupId = null
+            groupEn = ""
+            groupZh = ""
+            groupConfEn = 0f
+            groupConfZh = 0f
+            debounceJob = null
+            if (id == null) return@launch
+            if (en.isBlank() && zh.isBlank()) {
+                removePending(id)
+                return@launch
+            }
+            segments.send(Segment(en, zh, id))
+        }
+    }
+
+    private fun preferredSource(): Lang? =
+        _state.value.pending.lastOrNull()?.source ?: _state.value.lines.lastOrNull()?.source
+
+    /**
+     * Vosk gives us two candidates for every chunk. At final time we use its
+     * word confidence to choose which one is likely real speech; the script
+     * ratio and the previous line are fallbacks (partials have no confidence).
+     * DeepSeek still makes the authoritative choice.
+     */
+    private fun chooseSource(
+        en: String,
+        zh: String,
+        enConfidence: Float,
+        zhConfidence: Float,
+        preferred: Lang?,
+    ): Pair<Lang, String>? {
+        val e = en.trim()
+        val z = zh.trim()
+        if (e.isEmpty() && z.isEmpty()) return null
+        if (z.isEmpty()) return Lang.EN to e
+        if (e.isEmpty()) return Lang.ZH to z
+        if (enConfidence > zhConfidence + 0.08f) return Lang.EN to e
+        if (zhConfidence > enConfidence + 0.08f) return Lang.ZH to z
+        if (preferred == Lang.EN) return Lang.EN to e
+        if (preferred == Lang.ZH) return Lang.ZH to z
+        val eCjk = countCjk(e)
+        val zCjk = countCjk(z)
+        val eLatin = countLatin(e)
+        val zLatin = countLatin(z)
+        return when {
+            zCjk > 0 && eCjk == 0 && zLatin == 0 -> Lang.ZH to z
+            eLatin > 0 && zCjk == 0 && eCjk == 0 -> Lang.EN to e
+            zCjk > eCjk -> Lang.ZH to z
+            eLatin >= zLatin -> Lang.EN to e
+            else -> Lang.ZH to z
+        }
+    }
+
+    private fun countCjk(text: String): Int = text.count {
+        it.code in 0x4E00..0x9FFF || it.code in 0x3400..0x4DBF || it.code in 0xF900..0xFAFF
+    }
+
+    private fun countLatin(text: String): Int = text.count {
+        it in 'A'..'Z' || it in 'a'..'z'
+    }
+
+    private fun removePending(id: String) {
+        _state.update { st ->
+            if (st.pending.none { it.id == id }) st
+            else st.copy(pending = st.pending.filterNot { it.id == id })
+        }
+    }
+
+    private fun clearTransient() {
+        debounceJob?.cancel()
+        debounceJob = null
+        groupId = null
+        groupEn = ""
+        groupZh = ""
+        groupConfEn = 0f
+        groupConfZh = 0f
+        liveEn = ""
+        liveZh = ""
+        _state.update { it.copy(pending = emptyList(), live = null) }
     }
 
     private suspend fun processSegment(segment: Segment) {
@@ -272,23 +422,27 @@ class SessionEngine(
                 is JudgeOutcome.Success -> {
                     if (isDuplicate(outcome.en, outcome.zh)) {
                         Log.d(TAG, "duplicate segment ignored")
+                        removePending(segment.id)
                         return
                     }
                     val line = Utterance(
-                        id = UUID.randomUUID().toString(),
+                        id = segment.id,
                         en = outcome.en,
                         zh = outcome.zh,
                         source = outcome.src,
                         createdAt = System.currentTimeMillis(),
                         speaker = settings.nickname,
                     )
-                    addLine(line, remote = false)
+                    // Replace the pending row in the same state update so the
+                    // lyric row keeps its key and can animate buffer -> text.
+                    addLine(line, remote = false, replacingPendingId = segment.id)
                     roomHost?.broadcastLine(line)
                     roomClient?.sendLine(line)
                     Log.i(TAG, "line ${outcome.src}: ${outcome.en} / ${outcome.zh} (${outcome.latencyMs}ms)")
                 }
-                JudgeOutcome.NoSpeech -> Unit
+                JudgeOutcome.NoSpeech -> removePending(segment.id)
                 is JudgeOutcome.Failure -> {
+                    removePending(segment.id)
                     if (outcome.message.contains("API Key") || outcome.message.contains("余额") || outcome.message.contains("权限")) {
                         _state.update { it.copy(error = outcome.message) }
                     } else {
@@ -330,13 +484,17 @@ class SessionEngine(
         addLine(line, remote = true)
     }
 
-    private fun addLine(line: Utterance, remote: Boolean) {
+    private fun addLine(line: Utterance, remote: Boolean, replacingPendingId: String? = null) {
         var added = false
         _state.update { st ->
             if (st.lines.any { it.id == line.id }) st
             else {
                 added = true
-                st.copy(lines = st.lines + line.copy(remote = remote))
+                st.copy(
+                    lines = st.lines + line.copy(remote = remote),
+                    pending = if (replacingPendingId == null) st.pending
+                    else st.pending.filterNot { it.id == replacingPendingId },
+                )
             }
         }
         if (added) {
@@ -360,6 +518,7 @@ class SessionEngine(
     }
 
     private fun beginRecord(): DiscussionRecord {
+        clearTransient()
         synchronized(recordLock) {
             val now = System.currentTimeMillis()
             val record = DiscussionRecord(
@@ -386,6 +545,7 @@ class SessionEngine(
             _state.update { it.copy(notice = "只有房主可以清空房间记录") }
             return
         }
+        clearTransient()
         _state.update { it.copy(lines = emptyList()) }
         val id = currentRecordId
         if (id != null && _state.value.room == null) {
@@ -808,7 +968,7 @@ class SessionEngine(
         return ((db + 58.0) / 48.0).coerceIn(0.0, 1.0).toFloat()
     }
 
-    private data class Segment(val en: String, val zh: String)
+    private data class Segment(val en: String, val zh: String, val id: String)
     private data class DemoWav(val pcm: ByteArray, val sampleRate: Int, val channels: Int, val bits: Int)
 
     private fun parseWav(bytes: ByteArray): DemoWav? {

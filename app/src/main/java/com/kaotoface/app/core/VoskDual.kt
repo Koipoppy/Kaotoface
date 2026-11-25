@@ -14,7 +14,8 @@ import java.io.File
  * transcripts and let the LLM pick the coherent one afterwards.
  */
 class VoskDual(
-    private val onFinal: (Lang, String) -> Unit,
+    private val onPartial: (Lang, String) -> Unit,
+    private val onFinal: (Lang, String, Float) -> Unit,
 ) {
     private val lock = Any()
     private var enModel: Model? = null
@@ -57,12 +58,18 @@ class VoskDual(
             val zh = zhRec ?: return
             try {
                 if (en.acceptWaveForm(bytes, length)) {
-                    val text = textOf(en.result)
-                    if (text.isNotBlank()) onFinal(Lang.EN, text)
+                    val (text, confidence) = resultOf(en.result)
+                    if (text.isNotBlank()) onFinal(Lang.EN, text, confidence)
+                } else {
+                    val partial = partialOf(en.partialResult)
+                    if (partial.isNotBlank()) onPartial(Lang.EN, partial)
                 }
                 if (zh.acceptWaveForm(bytes, length)) {
-                    val text = textOf(zh.result)
-                    if (text.isNotBlank()) onFinal(Lang.ZH, text)
+                    val (text, confidence) = resultOf(zh.result)
+                    if (text.isNotBlank()) onFinal(Lang.ZH, text, confidence)
+                } else {
+                    val partial = partialOf(zh.partialResult)
+                    if (partial.isNotBlank()) onPartial(Lang.ZH, partial)
                 }
             } catch (t: Throwable) {
                 Log.w(TAG, "acceptWaveForm failed", t)
@@ -76,12 +83,12 @@ class VoskDual(
         synchronized(lock) {
             try {
                 enRec?.let {
-                    val t = textOf(it.finalResult)
-                    if (t.isNotBlank()) onFinal(Lang.EN, t)
+                    val (text, confidence) = resultOf(it.finalResult)
+                    if (text.isNotBlank()) onFinal(Lang.EN, text, confidence)
                 }
                 zhRec?.let {
-                    val t = textOf(it.finalResult)
-                    if (t.isNotBlank()) onFinal(Lang.ZH, t)
+                    val (text, confidence) = resultOf(it.finalResult)
+                    if (text.isNotBlank()) onFinal(Lang.ZH, text, confidence)
                 }
             } catch (t: Throwable) {
                 Log.w(TAG, "finishAll failed", t)
@@ -110,9 +117,28 @@ class VoskDual(
         }
     }
 
-    private fun textOf(json: String): String = runCatching {
-        JSONObject(json).optString("text", "").trim()
+    private fun partialOf(json: String): String = runCatching {
+        JSONObject(json).optString("partial", "").trim()
     }.getOrDefault("")
+
+    private fun resultOf(json: String): Pair<String, Float> = runCatching {
+        val obj = JSONObject(json)
+        val text = obj.optString("text", "").trim()
+        val words = obj.optJSONArray("result")
+        var sum = 0.0
+        var count = 0
+        if (words != null) {
+            for (i in 0 until words.length()) {
+                val word = words.optJSONObject(i) ?: continue
+                val conf = word.optDouble("conf", Double.NaN)
+                if (!conf.isNaN()) {
+                    sum += conf
+                    count++
+                }
+            }
+        }
+        text to (if (count > 0) (sum / count).toFloat() else 0f)
+    }.getOrDefault("" to 0f)
 
     companion object {
         private const val TAG = "KaoVosk"

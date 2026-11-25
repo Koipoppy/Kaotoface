@@ -108,10 +108,31 @@ fun KaoToFaceScreen(
     val snackbar = remember { SnackbarHostState() }
     val view = LocalView.current
     val configuration = LocalConfiguration.current
+    // Completed lines first, then frozen Vosk candidates, then the live Vosk
+    // candidate. Pending/live rows intentionally have only the source half;
+    // the other panel draws a buffer until DeepSeek returns.
+    val displayLines = remember(state.lines, state.pending, state.live) {
+        buildList {
+            addAll(state.lines)
+            state.pending.forEach { add(it.asUtterance()) }
+            state.live?.let { add(it.asUtterance()) }
+        }
+    }
+    val pendingIds = remember(state.pending, state.live) {
+        (state.pending.map { it.id } + listOfNotNull(state.live?.id)).toSet()
+    }
+    val liveId = state.live?.id
     val sync = rememberLyricSync(
-        lines = state.lines,
+        lines = displayLines,
         layoutKey = state.mode.name + "_" + configuration.screenWidthDp + "x" + configuration.screenHeightDp,
     )
+    // Pending -> final and final-line height changes keep the same list size,
+    // so nudge the active row back to the centre after each state transition.
+    LaunchedEffect(state.lines.size, state.pending.size, state.live?.id) {
+        if (sync.autoFollow && displayLines.isNotEmpty()) {
+            sync.recenter(displayLines.lastIndex)
+        }
+    }
     val contentAlpha = remember { Animatable(1f) }
     LaunchedEffect(state.mode, state.enFirst) {
         contentAlpha.snapTo(0.16f)
@@ -318,7 +339,9 @@ fun KaoToFaceScreen(
         ) -> Unit = { english, listState, modifier, reverse, fade ->
             LyricsPanel(
                 english = english,
-                lines = state.lines,
+                lines = displayLines,
+                pendingIds = pendingIds,
+                liveId = liveId,
                 listState = listState,
                 focusedIndex = sync.focusedIndex,
                 fontScale = settings.fontScale,
@@ -355,7 +378,7 @@ fun KaoToFaceScreen(
                         }
                     }
                 },
-                onFollow = { sync.followLatest(state.lines.lastIndex) },
+                onFollow = { sync.followLatest(displayLines.lastIndex) },
                 onSwap = { engine.swapSides() },
                 onRoom = { sheet = Sheet.Room },
                 onRecords = { sheet = Sheet.Records },

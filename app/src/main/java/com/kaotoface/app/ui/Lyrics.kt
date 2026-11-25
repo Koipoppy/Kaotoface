@@ -1,5 +1,10 @@
 package com.kaotoface.app.ui
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -61,6 +66,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -352,6 +358,8 @@ enum class PanelFade { None, Top, Bottom, Start, End }
 fun LyricsPanel(
     english: Boolean,
     lines: List<Utterance>,
+    pendingIds: Set<String> = emptySet(),
+    liveId: String? = null,
     listState: LazyListState,
     focusedIndex: Int,
     fontScale: Float,
@@ -387,17 +395,24 @@ fun LyricsPanel(
                     itemsIndexed(lines, key = { _, u -> u.id }) { index, u ->
                         val distance = if (focusedIndex < 0) 3 else abs(index - focusedIndex)
                         val isActive = index == focusedIndex
+                        val isPending = u.id in pendingIds
+                        val isLive = u.id == liveId
+                        val text = u.text(if (english) Lang.EN else Lang.ZH)
                         LyricRow(
-                            text = u.text(if (english) Lang.EN else Lang.ZH),
+                            text = text,
                             english = english,
                             active = isActive,
                             distance = distance,
                             fontScale = fontScale,
                             accent = accent,
-                            ttsHint = ttsEnabled && isActive,
+                            ttsHint = ttsEnabled && isActive && !isPending,
+                            placeholder = isPending && text.isBlank(),
+                            provisional = isPending,
+                            live = isLive,
+                            maxLines = if (isLive) 1 else 5,
                             modifier = Modifier.animateItem(),
                             onClick = {
-                                if (isActive && ttsEnabled) onSpeak(u)
+                                if (isActive && ttsEnabled && !isPending) onSpeak(u)
                                 else onSyncTo(index)
                             },
                         )
@@ -466,6 +481,10 @@ private fun LyricRow(
     accent: Color,
     ttsHint: Boolean,
     modifier: Modifier = Modifier,
+    placeholder: Boolean = false,
+    provisional: Boolean = false,
+    live: Boolean = false,
+    maxLines: Int = 5,
     onClick: () -> Unit,
 ) {
     val amount by animateFloatAsState(
@@ -495,6 +514,8 @@ private fun LyricRow(
         letterSpacing = if (english) 0.2.sp else 0.5.sp,
     )
     val strokePx = with(LocalDensity.current) { (0.7.dp.toPx() * fontScale) }
+    val textColor = TextHi.copy(alpha = alpha * if (provisional) 0.62f else 1f)
+    val placeholderHeight = (layoutSp * 1.34f * fontScale).dp
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -510,25 +531,101 @@ private fun LyricRow(
             .padding(horizontal = 26.dp, vertical = 6.dp),
         contentAlignment = Alignment.Center,
     ) {
+        val value: AnnotatedString? = if (placeholder) null else annotated
+        if (live && value != null) {
+            // Partial Vosk text changes every few chunks; animating each update
+            // would flicker, so the live source line is drawn directly.
+            LyricContent(value, textColor, amount, strokePx, maxLines, textStyle)
+        } else {
+            AnimatedContent(
+                targetState = value,
+                transitionSpec = {
+                    (
+                        fadeIn(tween(260, easing = FastOutSlowInEasing)) +
+                            slideInVertically(tween(260, easing = FastOutSlowInEasing)) { it / 6 }
+                        ).togetherWith(fadeOut(tween(140)))
+                },
+                modifier = Modifier.fillMaxWidth(),
+                label = "lyricContent",
+            ) { content ->
+                if (content == null) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(placeholderHeight),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        BufferDots(color = TextMid.copy(alpha = 0.90f))
+                    }
+                } else {
+                    LyricContent(content, textColor, amount, strokePx, maxLines, textStyle)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LyricContent(
+    text: AnnotatedString,
+    color: Color,
+    amount: Float,
+    strokePx: Float,
+    maxLines: Int,
+    textStyle: TextStyle,
+) {
+    Box(Modifier.fillMaxWidth()) {
         Text(
-            text = annotated,
+            text = text,
             modifier = Modifier.fillMaxWidth(),
-            color = TextHi.copy(alpha = alpha),
+            color = color,
             textAlign = TextAlign.Center,
-            maxLines = 5,
+            maxLines = maxLines,
             overflow = TextOverflow.Ellipsis,
             style = textStyle,
         )
         if (amount > 0.01f) {
             // A stroked twin adds weight without changing text measurement.
             Text(
-                text = annotated,
+                text = text,
                 modifier = Modifier.matchParentSize(),
-                color = TextHi.copy(alpha = (alpha * amount).coerceIn(0f, 1f)),
+                color = color.copy(alpha = (color.alpha * amount).coerceIn(0f, 1f)),
                 textAlign = TextAlign.Center,
-                maxLines = 5,
+                maxLines = maxLines,
                 overflow = TextOverflow.Ellipsis,
                 style = textStyle.copy(drawStyle = Stroke(width = strokePx)),
+            )
+        }
+    }
+}
+
+/** The opposite-language side of a pending line: three quiet breathing dots. */
+@Composable
+private fun BufferDots(color: Color, modifier: Modifier = Modifier) {
+    val transition = rememberInfiniteTransition(label = "buffer")
+    val phase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "bufferPhase",
+    )
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        repeat(3) { index ->
+            val wave = 0.5f + 0.5f * kotlin.math.sin(
+                (phase * 2f * kotlin.math.PI.toFloat()) - index * 0.85f,
+            )
+            Box(
+                Modifier
+                    .size(5.dp)
+                    .graphicsLayer { alpha = 0.28f + 0.62f * wave }
+                    .background(color, CircleShape),
             )
         }
     }
