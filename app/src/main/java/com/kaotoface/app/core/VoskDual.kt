@@ -8,6 +8,16 @@ import org.vosk.Model
 import org.vosk.Recognizer
 import java.io.File
 
+data class VoskCandidate(
+    val text: String,
+    val confidence: Float,
+)
+
+data class VoskUtterance(
+    val en: VoskCandidate,
+    val zh: VoskCandidate,
+)
+
 /**
  * Two Vosk recognizers fed the same microphone stream, one per language.
  * Neither model can know which language is being spoken, so we keep both
@@ -74,6 +84,49 @@ class VoskDual(
             } catch (t: Throwable) {
                 Log.w(TAG, "acceptWaveForm failed", t)
             }
+        }
+    }
+
+    /**
+     * Decode a buffered utterance from scratch with fresh recognizers. The
+     * streaming recognizers cannot rewind, but the PCM ring can: this is what
+     * recovers the first word even if Vosk's streaming endpoint swallowed it.
+     */
+    suspend fun decodeUtterance(pcm: ByteArray): VoskUtterance? = withContext(Dispatchers.IO) {
+        val refs = synchronized(lock) { enModel to zhModel }
+        val enModelRef = refs.first ?: return@withContext null
+        val zhModelRef = refs.second ?: return@withContext null
+        var enRec: Recognizer? = null
+        var zhRec: Recognizer? = null
+        try {
+            enRec = Recognizer(enModelRef, AudioCapture.SAMPLE_RATE.toFloat()).also {
+                it.setWords(true)
+                it.setMaxAlternatives(0)
+            }
+            zhRec = Recognizer(zhModelRef, AudioCapture.SAMPLE_RATE.toFloat()).also {
+                it.setWords(true)
+                it.setMaxAlternatives(0)
+            }
+            var offset = 0
+            while (offset < pcm.size) {
+                val count = minOf(3200, pcm.size - offset)
+                val chunk = pcm.copyOfRange(offset, offset + count)
+                enRec.acceptWaveForm(chunk, count)
+                zhRec.acceptWaveForm(chunk, count)
+                offset += count
+            }
+            val en = resultOf(enRec.finalResult)
+            val zh = resultOf(zhRec.finalResult)
+            VoskUtterance(
+                en = VoskCandidate(en.first, en.second),
+                zh = VoskCandidate(zh.first, zh.second),
+            )
+        } catch (t: Throwable) {
+            Log.w(TAG, "utterance re-decode failed", t)
+            null
+        } finally {
+            runCatching { enRec?.close() }
+            runCatching { zhRec?.close() }
         }
     }
 

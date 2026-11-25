@@ -59,6 +59,7 @@ class SessionEngine(
     private var records: List<DiscussionRecord> = emptyList()
     private var currentRecordId: String? = null
     private val segments = Channel<Segment>(Channel.UNLIMITED)
+    private val groupQueue = Channel<GroupSnapshot>(Channel.UNLIMITED)
 
     private var prepJob: Job? = null
     private var demoJob: Job? = null
@@ -81,7 +82,14 @@ class SessionEngine(
     private var groupConfEn = 0f
     private var groupConfZh = 0f
     private var groupId: String? = null
+    private var groupStartedAt = 0L
     private var lastPartialAt = 0L
+
+    // Raw PCM history lets the final pass restart before the first Vosk partial.
+    private val pcmRing = PcmRingBuffer(AudioCapture.SAMPLE_RATE * 2 * RING_SECONDS)
+    private val groupLock = Any()
+    private var utteranceStartByte = -1L
+    private var utteranceEndByte = -1L
 
     init {
         val stored = recordsStore.load()
@@ -126,6 +134,19 @@ class SessionEngine(
         scope.launch {
             settingsStore.state.collect { s ->
                 _state.update { st -> st.copy(mode = s.mode, enFirst = s.enFirst) }
+            }
+        }
+        scope.launch {
+            for (snapshot in groupQueue) {
+                try {
+                    processGroup(snapshot)
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (t: Throwable) {
+                    Log.w(TAG, "group failed", t)
+                    removePending(snapshot.id)
+                    _state.update { it.copy(error = "翻译流程出错：${t.message ?: "未知错误"}") }
+                }
             }
         }
         scope.launch {
@@ -180,7 +201,10 @@ class SessionEngine(
                 coroutineContext.ensureActive()
                 val recognizers = dual ?: error("语音模型未就绪")
                 val capture = AudioCapture(
-                    onAudio = { bytes, len -> recognizers.feed(bytes, len) },
+                    onAudio = { bytes, len ->
+                        pcmRing.append(bytes, len)
+                        recognizers.feed(bytes, len)
+                    },
                     onLevel = { level -> _level.value = level },
                     onError = { message ->
                         _state.update { it.copy(error = message) }
@@ -258,10 +282,18 @@ class SessionEngine(
     private fun onPartial(lang: Lang, text: String) {
         val clean = text.trim()
         if (clean.isEmpty()) return
-        if (lang == Lang.EN) liveEn = clean else liveZh = clean
-        // The group is already frozen and has a target buffer; don't let a
-        // trailing partial rewrite it. The next utterance starts a new live line.
-        if (groupId != null) return
+        synchronized(groupLock) {
+            if (lang == Lang.EN) liveEn = clean else liveZh = clean
+            // The first partial marks the utterance. Keep the ring position a
+            // little before it so a fresh decode can recover the swallowed onset.
+            if (groupId == null && utteranceStartByte < 0) {
+                val total = pcmRing.totalBytes()
+                utteranceStartByte = (total - PRE_ROLL_BYTES).coerceAtLeast(0)
+            }
+            // The group is already frozen and has a target buffer; don't let a
+            // trailing partial rewrite it. The next utterance starts a new live line.
+            if (groupId != null) return
+        }
         val choice = chooseSource(liveEn, liveZh, 0f, 0f, preferredSource()) ?: return
         val current = _state.value.live
         if (current != null && current.source == choice.first && current.text == choice.second) return
@@ -281,67 +313,160 @@ class SessionEngine(
     private fun onFinal(lang: Lang, text: String, confidence: Float) {
         val clean = text.trim()
         if (clean.isEmpty()) return
-        if (lang == Lang.EN) {
-            groupEn = clean
-            groupConfEn = confidence
-        } else {
-            groupZh = clean
-            groupConfZh = confidence
+        val now = System.currentTimeMillis()
+        var firstId: String? = null
+        var firstCreatedAt = now
+        var choice: Pair<Lang, String>? = null
+        synchronized(groupLock) {
+            if (lang == Lang.EN) {
+                groupEn = appendFinal(groupEn, clean, Lang.EN)
+                groupConfEn = confidence
+            } else {
+                groupZh = appendFinal(groupZh, clean, Lang.ZH)
+                groupConfZh = confidence
+            }
+            if (utteranceStartByte < 0) {
+                utteranceStartByte = (pcmRing.totalBytes() - PRE_ROLL_BYTES).coerceAtLeast(0)
+            }
+            utteranceEndByte = pcmRing.totalBytes()
+            if (groupId == null) {
+                groupStartedAt = now
+                val live = _state.value.live
+                firstId = live?.id ?: UUID.randomUUID().toString()
+                firstCreatedAt = live?.createdAt ?: now
+                groupId = firstId
+                liveEn = ""
+                liveZh = ""
+            }
+            choice = chooseSource(groupEn, groupZh, groupConfEn, groupConfZh, preferredSource())
         }
-        val choice = chooseSource(groupEn, groupZh, groupConfEn, groupConfZh, preferredSource()) ?: return
-        val id = groupId
-        if (id == null) {
-            val live = _state.value.live
-            val lineId = live?.id ?: UUID.randomUUID().toString()
+        val chosen = choice ?: return
+        val id = firstId ?: groupId ?: return
+        if (firstId != null) {
             val pendingLine = PendingLine(
-                id = lineId,
-                source = choice.first,
-                text = choice.second,
-                createdAt = live?.createdAt ?: System.currentTimeMillis(),
+                id = id,
+                source = chosen.first,
+                text = chosen.second,
+                createdAt = firstCreatedAt,
             )
-            groupId = lineId
             _state.update {
                 it.copy(
                     live = null,
                     pending = it.pending + pendingLine,
                 )
             }
-            liveEn = ""
-            liveZh = ""
-            startDebounce()
         } else {
-            // The other Vosk stream finalised within the same 700ms window.
-            // Keep one buffer row and update its source candidate.
+            // The other Vosk stream finalised within the same window. Keep one
+            // buffer row and grow its source candidate.
             _state.update { st ->
                 st.copy(
                     pending = st.pending.map {
-                        if (it.id == id) it.copy(source = choice.first, text = choice.second) else it
+                        if (it.id == id) it.copy(source = chosen.first, text = chosen.second) else it
                     },
                 )
             }
         }
+        scheduleDebounce()
     }
 
-    private fun startDebounce() {
-        if (debounceJob != null) return
+    private fun appendFinal(existing: String, text: String, lang: Lang): String = when {
+        existing.isBlank() -> text
+        text.isBlank() -> existing
+        existing.endsWith(text) -> existing
+        text.startsWith(existing) -> text
+        lang == Lang.EN -> "$existing $text"
+        else -> existing + text
+    }
+
+    private fun scheduleDebounce() {
+        val waitMs = synchronized(groupLock) {
+            if (groupId == null) return
+            val elapsed = System.currentTimeMillis() - groupStartedAt
+            if (elapsed >= GROUP_MAX_MS) 0L else GROUP_IDLE_MS
+        }
+        debounceJob?.cancel()
         debounceJob = scope.launch {
-            delay(700)
-            val id = groupId
-            val en = groupEn
-            val zh = groupZh
+            delay(waitMs)
+            endGroup()
+        }
+    }
+
+    private suspend fun endGroup() {
+        val snapshot = synchronized(groupLock) {
+            val id = groupId ?: return
+            val s = GroupSnapshot(
+                id = id,
+                en = groupEn,
+                zh = groupZh,
+                enConfidence = groupConfEn,
+                zhConfidence = groupConfZh,
+                startByte = utteranceStartByte,
+                endByte = utteranceEndByte,
+            )
             groupId = null
             groupEn = ""
             groupZh = ""
             groupConfEn = 0f
             groupConfZh = 0f
+            groupStartedAt = 0L
+            utteranceStartByte = -1L
+            utteranceEndByte = -1L
+            liveEn = ""
+            liveZh = ""
             debounceJob = null
-            if (id == null) return@launch
-            if (en.isBlank() && zh.isBlank()) {
-                removePending(id)
-                return@launch
-            }
-            segments.send(Segment(en, zh, id))
+            s
         }
+        // Re-decode can take different amounts of time per sentence; a single
+        // consumer keeps the timeline in speech order.
+        groupQueue.send(snapshot)
+    }
+
+    private suspend fun processGroup(snapshot: GroupSnapshot) {
+        val pcm = if (snapshot.startByte >= 0 && snapshot.endByte > snapshot.startByte) {
+            pcmRing.snapshot(snapshot.startByte, snapshot.endByte)
+        } else null
+        val decoded = if (pcm != null && pcm.size >= MIN_DECODE_BYTES) {
+            try {
+                dual?.decodeUtterance(pcm)
+            } catch (t: Throwable) {
+                Log.w(TAG, "utterance re-decode failed", t)
+                null
+            }
+        } else null
+
+        var en = snapshot.en
+        var zh = snapshot.zh
+        var enConf = snapshot.enConfidence
+        var zhConf = snapshot.zhConfidence
+        if (decoded != null) {
+            if (decoded.en.text.isNotBlank()) {
+                en = decoded.en.text
+                enConf = decoded.en.confidence
+            }
+            if (decoded.zh.text.isNotBlank()) {
+                zh = decoded.zh.text
+                zhConf = decoded.zh.confidence
+            }
+            Log.i(
+                TAG,
+                "group stream=[${snapshot.en} | ${snapshot.zh}] " +
+                    "redecode=[${decoded.en.text} | ${decoded.zh.text}]",
+            )
+        }
+        if (en.isBlank() && zh.isBlank()) {
+            removePending(snapshot.id)
+            return
+        }
+        chooseSource(en, zh, enConf, zhConf, preferredSource())?.let { chosen ->
+            _state.update { st ->
+                st.copy(
+                    pending = st.pending.map {
+                        if (it.id == snapshot.id) it.copy(source = chosen.first, text = chosen.second) else it
+                    },
+                )
+            }
+        }
+        segments.send(Segment(en, zh, snapshot.id))
     }
 
     private fun preferredSource(): Lang? =
@@ -400,13 +525,19 @@ class SessionEngine(
     private fun clearTransient() {
         debounceJob?.cancel()
         debounceJob = null
-        groupId = null
-        groupEn = ""
-        groupZh = ""
-        groupConfEn = 0f
-        groupConfZh = 0f
-        liveEn = ""
-        liveZh = ""
+        synchronized(groupLock) {
+            groupId = null
+            groupEn = ""
+            groupZh = ""
+            groupConfEn = 0f
+            groupConfZh = 0f
+            groupStartedAt = 0L
+            utteranceStartByte = -1L
+            utteranceEndByte = -1L
+            liveEn = ""
+            liveZh = ""
+        }
+        pcmRing.clear()
         _state.update { it.copy(pending = emptyList(), live = null) }
     }
 
@@ -667,6 +798,7 @@ class SessionEngine(
                 while (offset < wav.pcm.size && isActive) {
                     val n = minOf(chunkSize, wav.pcm.size - offset)
                     val chunk = wav.pcm.copyOfRange(offset, offset + n)
+                    pcmRing.append(chunk, n)
                     recognizers.feed(chunk, n)
                     _level.value = pcmLevel(chunk)
                     offset += n
@@ -675,6 +807,7 @@ class SessionEngine(
                 repeat(14) {
                     if (!isActive) return@repeat
                     val silence = ByteArray(chunkSize)
+                    pcmRing.append(silence, silence.size)
                     recognizers.feed(silence, silence.size)
                     delay(100)
                 }
@@ -969,6 +1102,16 @@ class SessionEngine(
     }
 
     private data class Segment(val en: String, val zh: String, val id: String)
+
+    private data class GroupSnapshot(
+        val id: String,
+        val en: String,
+        val zh: String,
+        val enConfidence: Float,
+        val zhConfidence: Float,
+        val startByte: Long,
+        val endByte: Long,
+    )
     private data class DemoWav(val pcm: ByteArray, val sampleRate: Int, val channels: Int, val bits: Int)
 
     private fun parseWav(bytes: ByteArray): DemoWav? {
@@ -1006,5 +1149,10 @@ class SessionEngine(
 
     companion object {
         private const val TAG = "KaoEngine"
+        private const val RING_SECONDS = 12
+        private const val GROUP_IDLE_MS = 700L
+        private const val GROUP_MAX_MS = 2500L
+        private const val PRE_ROLL_BYTES = AudioCapture.SAMPLE_RATE * 2 * 8 / 10 // 800ms
+        private const val MIN_DECODE_BYTES = AudioCapture.SAMPLE_RATE * 2 / 4 // 250ms
     }
 }

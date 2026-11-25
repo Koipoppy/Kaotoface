@@ -21,7 +21,7 @@
 
 ## 快速开始
 
-1. 构建并安装 `KaoToFace-0.0.2.apk`（Android 8.0+）。成品包不放进 Git 仓库，可用 `assembleRelease` 构建，或从 Releases 下载。
+1. 构建并安装 `KaoToFace-0.0.3.apk`（Android 8.0+）。成品包不放进 Git 仓库，可用 `assembleRelease` 构建，或从 Releases 下载。
 2. 首次启动会给麦克风与通知权限；拒绝通知不影响使用。
 3. **第一次开始聆听或播放演示**时，会在本机解压约 130MB 的离线中英语音模型（仅一次，进度可见）。
 4. 把手机放在两人中间，点中间的大按钮开始。
@@ -138,6 +138,9 @@
 - **识别**：Vosk small EN / ZH，完全离线，双模型同时喂同一路音频。
   partial 只在本机显示成临时源语言字幕，不会发给 DeepSeek；final 才进入句末处理。
   两路结果都交给 LLM 判定，因此不需要单独的语种分类器，也能修正识别错字。
+- **首字修复**：持续保留最近 12 秒 PCM；检测到 Vosk partial 时记下句首前 0.8 秒，
+  句末用新建的 Vosk 识别器对这段音频整段重解码。同语言多个 final 会拼接而不是覆盖，
+  700ms 聚合计时器在每次 final 后重置，避免首字被 streaming endpoint 吞掉。
 - **翻译**：DeepSeek（默认 `deepseek-flash`，可在设置中从 `/models` 实时选择），
   `thinking: disabled`，JSON 输出；每句一次调用，串行队列保证上下文顺序。
   定稿返回前，目标语言一侧显示三个呼吸缓冲点；返回后用 260ms 淡入/上移动画替换。
@@ -194,8 +197,8 @@ docs/      截图
 构建完成后把正式包按版本命名放到**项目根目录**：
 
 ```bash
-cp app/build/outputs/apk/release/app-release.apk ./KaoToFace-0.0.2.apk
-sha256sum KaoToFace-0.0.2.apk > KaoToFace-0.0.2.apk.sha256
+cp app/build/outputs/apk/release/app-release.apk ./KaoToFace-0.0.3.apk
+sha256sum KaoToFace-0.0.3.apk > KaoToFace-0.0.3.apk.sha256
 ```
 
 版本号规则：每次发布最后一位 +1，逢十进一（`0.0.2 → 0.0.3 … 0.0.9 → 0.1.0`），
@@ -254,7 +257,7 @@ KAOTOFACE_KEY_ALIAS=kaotoface   # 可选
 - 记录：每次聆听生成 `日期 · 编号` 的独立记录，记录页列表、详情、分享/复制/保存通过；
   重开 App 显示最近一条非空记录。
 - 横屏控制条竖排（平行短边），按钮按竖屏物理位置一一对应，切换模式不换位。
-- 签名 release 包（`com.kaotoface.app` 0.0.2）在模拟器安装、启动通过，主界面与截图一致。
+- 签名 release 包（`com.kaotoface.app` 0.0.3）在模拟器安装、启动通过，主界面与截图一致。
 
 ---
 
