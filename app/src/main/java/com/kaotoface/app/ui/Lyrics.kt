@@ -409,7 +409,9 @@ fun LyricsPanel(
                             placeholder = isPending && text.isBlank(),
                             provisional = isPending,
                             live = isLive,
-                            maxLines = if (isLive) 1 else 5,
+                            // DeepSeek already splits long speech into sentences;
+                            // never hide a finished sentence behind an ellipsis.
+                            maxLines = if (isLive) 1 else Int.MAX_VALUE,
                             modifier = Modifier.animateItem(),
                             onClick = {
                                 if (isActive && ttsEnabled && !isPending) onSpeak(u)

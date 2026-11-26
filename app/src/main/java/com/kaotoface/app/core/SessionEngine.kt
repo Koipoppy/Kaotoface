@@ -556,25 +556,34 @@ class SessionEngine(
             }
             when (outcome) {
                 is JudgeOutcome.Success -> {
-                    if (isDuplicate(outcome.en, outcome.zh)) {
-                        Log.d(TAG, "duplicate segment ignored")
-                        removePending(segment.id)
-                        return
+                    var firstAdded = false
+                    outcome.lines.forEachIndexed { index, translated ->
+                        if (isDuplicate(translated.en, translated.zh)) {
+                            Log.d(TAG, "duplicate line ignored")
+                            return@forEachIndexed
+                        }
+                        val id = if (!firstAdded) segment.id else "${segment.id}-$index"
+                        val line = Utterance(
+                            id = id,
+                            en = translated.en,
+                            zh = translated.zh,
+                            source = outcome.src,
+                            createdAt = System.currentTimeMillis() + index,
+                            speaker = settings.nickname,
+                        )
+                        // The first sentence replaces the pending row in the
+                        // same state update, preserving its key for the animation.
+                        addLine(
+                            line,
+                            remote = false,
+                            replacingPendingId = if (!firstAdded) segment.id else null,
+                        )
+                        roomHost?.broadcastLine(line)
+                        roomClient?.sendLine(line)
+                        firstAdded = true
+                        Log.i(TAG, "line ${outcome.src}: ${line.en} / ${line.zh} (${outcome.latencyMs}ms)")
                     }
-                    val line = Utterance(
-                        id = segment.id,
-                        en = outcome.en,
-                        zh = outcome.zh,
-                        source = outcome.src,
-                        createdAt = System.currentTimeMillis(),
-                        speaker = settings.nickname,
-                    )
-                    // Replace the pending row in the same state update so the
-                    // lyric row keeps its key and can animate buffer -> text.
-                    addLine(line, remote = false, replacingPendingId = segment.id)
-                    roomHost?.broadcastLine(line)
-                    roomClient?.sendLine(line)
-                    Log.i(TAG, "line ${outcome.src}: ${outcome.en} / ${outcome.zh} (${outcome.latencyMs}ms)")
+                    if (!firstAdded) removePending(segment.id)
                 }
                 JudgeOutcome.NoSpeech -> removePending(segment.id)
                 is JudgeOutcome.Failure -> {

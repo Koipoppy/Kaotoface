@@ -10,11 +10,15 @@ import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
+data class TranslatedLine(
+    val en: String,
+    val zh: String,
+)
+
 sealed class JudgeOutcome {
     data class Success(
         val src: Lang,
-        val en: String,
-        val zh: String,
+        val lines: List<TranslatedLine>,
         val latencyMs: Long,
     ) : JudgeOutcome()
 
@@ -57,7 +61,7 @@ class DeepSeekTranslator {
                     put(JSONObject().put("role", "user").put("content", user))
                 },
             )
-            put("max_tokens", 1200)
+            put("max_tokens", 2400)
             put("temperature", 0.1)
             put("stream", false)
             put("response_format", JSONObject().put("type", "json_object"))
@@ -212,9 +216,9 @@ class DeepSeekTranslator {
             return JudgeOutcome.Failure("翻译结果格式异常")
         }
         var src = obj.optString("src", "").trim().lowercase()
-        var en = obj.optString("en", "").trim()
-        var zh = obj.optString("zh", "").trim()
-        if (src == "none" || (en.isBlank() && zh.isBlank())) return JudgeOutcome.NoSpeech
+        val en = obj.optString("en", "").trim()
+        val zh = obj.optString("zh", "").trim()
+        if (src == "none") return JudgeOutcome.NoSpeech
         // Amounts are hard evidence. A fluent English phonetic hallucination
         // ("standby to syria") must not override the Chinese candidate that
         // actually contains the spoken number ("390元").
@@ -222,22 +226,37 @@ class DeepSeekTranslator {
         val enAmount = LanguageHeuristics.hasAmount(enCandidate)
         if (zhAmount && !enAmount) src = "zh"
         else if (enAmount && !zhAmount) src = "en"
+
+        val lines = mutableListOf<TranslatedLine>()
+        val array = obj.optJSONArray("lines")
+        if (array != null) {
+            for (i in 0 until array.length()) {
+                val item = array.optJSONObject(i) ?: continue
+                val lineEn = cleanup(item.optString("en", ""))
+                val lineZh = cleanup(item.optString("zh", ""))
+                if (lineEn.isNotBlank() && lineZh.isNotBlank()) {
+                    lines += TranslatedLine(lineEn, lineZh)
+                }
+            }
+        }
+        // Backwards-compatible single-line response.
+        if (lines.isEmpty() && en.isNotBlank() && zh.isNotBlank()) {
+            lines += TranslatedLine(cleanup(en), cleanup(zh))
+        }
+        if (lines.isEmpty()) {
+            if (en.isBlank() && zh.isBlank()) return JudgeOutcome.NoSpeech
+            return JudgeOutcome.Failure("翻译结果不完整")
+        }
         val lang = when {
             src.startsWith("en") || src == "english" -> Lang.EN
             src.startsWith("zh") || src == "chinese" || src == "mandarin" -> Lang.ZH
             enCandidate.isBlank() -> Lang.ZH
             zhCandidate.isBlank() -> Lang.EN
-            en.isNotBlank() && zh.isBlank() -> Lang.EN
-            zh.isNotBlank() && en.isBlank() -> Lang.ZH
             else -> return JudgeOutcome.Failure("无法判断这句话的语言")
         }
-        if (lang == Lang.EN && en.isBlank()) en = enCandidate
-        if (lang == Lang.ZH && zh.isBlank()) zh = zhCandidate
-        if (en.isBlank() || zh.isBlank()) return JudgeOutcome.Failure("翻译结果不完整")
         return JudgeOutcome.Success(
             src = lang,
-            en = cleanup(en),
-            zh = cleanup(zh),
+            lines = lines,
             latencyMs = System.currentTimeMillis() - started,
         )
     }
@@ -304,10 +323,13 @@ class DeepSeekTranslator {
         工作步骤：
         1. 选出真正连贯、语义通顺的候选（可能是英文，也可能是中文）。
         2. 整理选中的文本：结合上下文修正同音字、错别字、漏字和错误断句，补全标点，但不要改写原意、不添加信息、不添加程度词或评价；不要改变时间、数量与否定关系。例如商务会议语境中「市场船队」应纠正为「市场团队」。
-        3. 翻译成另一种语言。${tone.prompt}
-        4. 数字、金额、时间必须保留。如果中文候选包含数字/金额（例如「390元」「三百九十元」），而英文候选只是一串音近英文（例如「standby to syria」），必须优先中文；反过来，英文候选包含实际数字/金额而中文候选没有时优先英文。不要因为英文候选看起来像常见单词就选它。
+        3. **按语义分句**：如果输入包含多个完整意思、多个分句或较长段落，必须拆成多个独立句子，逐句翻译。中文必须使用中文标点（，。？！）；不要输出无标点的长串，也不要把整段塞进一行。短句可以保留一行。
+        4. 翻译成另一种语言。${tone.prompt}
+        5. 数字、金额、时间必须保留。如果中文候选包含数字/金额（例如「390元」「三百九十元」），而英文候选只是一串音近英文（例如「standby to syria」），必须优先中文；反过来，英文候选包含实际数字/金额而中文候选没有时优先英文。不要因为英文候选看起来像常见单词就选它。
 
-        只输出严格 JSON：{"src":"en"|"zh"|"none","en":"...","zh":"..."}
+        只输出严格 JSON：
+        {"src":"en"|"zh"|"none","lines":[{"en":"...","zh":"..."}]}
+        每个 line 是一句完整的话，中英各一条；中英行数与顺序一致。长文本必须拆成多个 line，绝对不能合并成一段。
         两个候选都完全不成句、或只是环境噪音时才返回 "none"。保留人名、数字与专有名词。不要输出解释或 Markdown。
     """.trimIndent()
 
