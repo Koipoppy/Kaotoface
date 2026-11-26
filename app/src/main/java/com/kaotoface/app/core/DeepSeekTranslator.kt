@@ -215,6 +215,13 @@ class DeepSeekTranslator {
         var en = obj.optString("en", "").trim()
         var zh = obj.optString("zh", "").trim()
         if (src == "none" || (en.isBlank() && zh.isBlank())) return JudgeOutcome.NoSpeech
+        // Amounts are hard evidence. A fluent English phonetic hallucination
+        // ("standby to syria") must not override the Chinese candidate that
+        // actually contains the spoken number ("390元").
+        val zhAmount = LanguageHeuristics.hasAmount(zhCandidate)
+        val enAmount = LanguageHeuristics.hasAmount(enCandidate)
+        if (zhAmount && !enAmount) src = "zh"
+        else if (enAmount && !zhAmount) src = "en"
         val lang = when {
             src.startsWith("en") || src == "english" -> Lang.EN
             src.startsWith("zh") || src == "chinese" || src == "mandarin" -> Lang.ZH
@@ -298,6 +305,7 @@ class DeepSeekTranslator {
         1. 选出真正连贯、语义通顺的候选（可能是英文，也可能是中文）。
         2. 整理选中的文本：结合上下文修正同音字、错别字、漏字和错误断句，补全标点，但不要改写原意、不添加信息、不添加程度词或评价；不要改变时间、数量与否定关系。例如商务会议语境中「市场船队」应纠正为「市场团队」。
         3. 翻译成另一种语言。${tone.prompt}
+        4. 数字、金额、时间必须保留。如果中文候选包含数字/金额（例如「390元」「三百九十元」），而英文候选只是一串音近英文（例如「standby to syria」），必须优先中文；反过来，英文候选包含实际数字/金额而中文候选没有时优先英文。不要因为英文候选看起来像常见单词就选它。
 
         只输出严格 JSON：{"src":"en"|"zh"|"none","en":"...","zh":"..."}
         两个候选都完全不成句、或只是环境噪音时才返回 "none"。保留人名、数字与专有名词。不要输出解释或 Markdown。
@@ -315,6 +323,15 @@ class DeepSeekTranslator {
         }
         appendLine("en_candidate: ${enCandidate.ifBlank { "（空）" }}")
         append("zh_candidate: ${zhCandidate.ifBlank { "（空）" }}")
+        val zhAmount = LanguageHeuristics.hasAmount(zhCandidate)
+        val enAmount = LanguageHeuristics.hasAmount(enCandidate)
+        if (zhAmount && !enAmount) {
+            appendLine()
+            append("语言提示：中文候选含数字/金额，英文候选没有；优先中文。")
+        } else if (enAmount && !zhAmount) {
+            appendLine()
+            append("语言提示：英文候选含数字/金额，中文候选没有；优先英文。")
+        }
     }
 
     companion object {

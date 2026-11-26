@@ -490,21 +490,26 @@ class SessionEngine(
         if (e.isEmpty() && z.isEmpty()) return null
         if (z.isEmpty()) return Lang.EN to e
         if (e.isEmpty()) return Lang.ZH to z
-        if (enConfidence > zhConfidence + 0.08f) return Lang.EN to e
-        if (zhConfidence > enConfidence + 0.08f) return Lang.ZH to z
-        if (preferred == Lang.EN) return Lang.EN to e
-        if (preferred == Lang.ZH) return Lang.ZH to z
         val eCjk = countCjk(e)
         val zCjk = countCjk(z)
         val eLatin = countLatin(e)
         val zLatin = countLatin(z)
-        return when {
-            zCjk > 0 && eCjk == 0 && zLatin == 0 -> Lang.ZH to z
-            eLatin > 0 && zCjk == 0 && eCjk == 0 -> Lang.EN to e
-            zCjk > eCjk -> Lang.ZH to z
-            eLatin >= zLatin -> Lang.EN to e
-            else -> Lang.ZH to z
-        }
+        // A real amount/number is strong evidence. "standby to syria" must not
+        // beat "390元" merely because it is a fluent-looking English phrase.
+        val zhAmount = LanguageHeuristics.hasAmount(z)
+        val enAmount = LanguageHeuristics.hasAmount(e)
+        if (zhAmount && !enAmount) return Lang.ZH to z
+        if (enAmount && !zhAmount) return Lang.EN to e
+        if (enConfidence > zhConfidence + 0.08f) return Lang.EN to e
+        if (zhConfidence > enConfidence + 0.08f) return Lang.ZH to z
+        // Current-sentence script evidence comes before the previous line's
+        // language. Otherwise a Chinese sentence after English is forced back
+        // into English even when the Chinese candidate is clearly CJK.
+        if (zCjk > eCjk + 1) return Lang.ZH to z
+        if (eLatin > zLatin + 1) return Lang.EN to e
+        if (preferred == Lang.EN) return Lang.EN to e
+        if (preferred == Lang.ZH) return Lang.ZH to z
+        return if (z.length >= e.length) Lang.ZH to z else Lang.EN to e
     }
 
     private fun countCjk(text: String): Int = text.count {
