@@ -422,46 +422,25 @@ class SessionEngine(
     }
 
     private suspend fun processGroup(snapshot: GroupSnapshot) {
-        val pcm = if (snapshot.startByte >= 0 && snapshot.endByte > snapshot.startByte) {
-            pcmRing.snapshot(snapshot.startByte, snapshot.endByte)
-        } else null
-        val decoded = if (pcm != null && pcm.size >= MIN_DECODE_BYTES) {
-            try {
-                dual?.decodeUtterance(pcm)
-            } catch (t: Throwable) {
-                Log.w(TAG, "utterance re-decode failed", t)
-                null
-            }
-        } else null
-
-        var en = snapshot.en
-        var zh = snapshot.zh
-        var enConf = snapshot.enConfidence
-        var zhConf = snapshot.zhConfidence
-        if (decoded != null) {
-            if (decoded.en.text.isNotBlank()) {
-                en = decoded.en.text
-                enConf = decoded.en.confidence
-            }
-            if (decoded.zh.text.isNotBlank()) {
-                zh = ChineseTextNormalizer.normalize(decoded.zh.text)
-                zhConf = decoded.zh.confidence
-            }
-            Log.i(
-                TAG,
-                "group stream=[${snapshot.en} | ${snapshot.zh}] " +
-                    "redecode=[${decoded.en.text} | ${decoded.zh.text}]",
-            )
-        }
+        val en = snapshot.en
+        val zh = snapshot.zh
         if (en.isBlank() && zh.isBlank()) {
             removePending(snapshot.id)
             return
         }
-        val chosen = chooseSource(en, zh, enConf, zhConf, preferredSource())
+        val chosen = chooseSource(
+            en,
+            zh,
+            snapshot.enConfidence,
+            snapshot.zhConfidence,
+            preferredSource(),
+        )
         if (chosen == null) {
             removePending(snapshot.id)
             return
         }
+        // Keep the full dual candidates. Splitting the source into one-sided
+        // chunks loses DeepSeek's cross-check between the two ASR streams.
         _state.update { st ->
             st.copy(
                 pending = st.pending.map {
@@ -469,21 +448,8 @@ class SessionEngine(
                 },
             )
         }
-        val chunks = TextSegmenter.split(chosen.second, chosen.first)
-        if (chunks.isEmpty()) {
-            removePending(snapshot.id)
-            return
-        }
-        chunks.forEachIndexed { index, chunk ->
-            val id = if (index == 0) snapshot.id else "${snapshot.id}-c$index"
-            segments.send(
-                Segment(
-                    en = if (chosen.first == Lang.EN) chunk else "",
-                    zh = if (chosen.first == Lang.ZH) chunk else "",
-                    id = id,
-                ),
-            )
-        }
+        Log.i(TAG, "group=[$en | $zh]")
+        segments.send(Segment(en, zh, snapshot.id))
     }
 
     private fun preferredSource(): Lang? =
