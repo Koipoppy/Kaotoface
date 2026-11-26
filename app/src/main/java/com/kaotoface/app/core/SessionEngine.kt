@@ -280,7 +280,7 @@ class SessionEngine(
     }
 
     private fun onPartial(lang: Lang, text: String) {
-        val clean = text.trim()
+        val clean = if (lang == Lang.ZH) ChineseTextNormalizer.normalize(text) else text.trim()
         if (clean.isEmpty()) return
         synchronized(groupLock) {
             if (lang == Lang.EN) liveEn = clean else liveZh = clean
@@ -311,7 +311,7 @@ class SessionEngine(
     }
 
     private fun onFinal(lang: Lang, text: String, confidence: Float) {
-        val clean = text.trim()
+        val clean = if (lang == Lang.ZH) ChineseTextNormalizer.normalize(text) else text.trim()
         if (clean.isEmpty()) return
         val now = System.currentTimeMillis()
         var firstId: String? = null
@@ -444,7 +444,7 @@ class SessionEngine(
                 enConf = decoded.en.confidence
             }
             if (decoded.zh.text.isNotBlank()) {
-                zh = decoded.zh.text
+                zh = ChineseTextNormalizer.normalize(decoded.zh.text)
                 zhConf = decoded.zh.confidence
             }
             Log.i(

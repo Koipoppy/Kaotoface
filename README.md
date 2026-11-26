@@ -21,7 +21,7 @@
 
 ## 快速开始
 
-1. 构建并安装 `KaoToFace-0.0.4.apk`（Android 8.0+）。成品包不放进 Git 仓库，可用 `assembleRelease` 构建，或从 Releases 下载。
+1. 构建并安装 `KaoToFace-0.0.5.apk`（Android 8.0+）。成品包不放进 Git 仓库，可用 `assembleRelease` 构建，或从 Releases 下载。
 2. 首次启动会给麦克风与通知权限；拒绝通知不影响使用。
 3. **第一次开始聆听或播放演示**时，会在本机解压约 130MB 的离线中英语音模型（仅一次，进度可见）。
 4. 把手机放在两人中间，点中间的大按钮开始。
@@ -201,8 +201,8 @@ docs/      截图
 构建完成后把正式包按版本命名放到**项目根目录**：
 
 ```bash
-cp app/build/outputs/apk/release/app-release.apk ./KaoToFace-0.0.4.apk
-sha256sum KaoToFace-0.0.4.apk > KaoToFace-0.0.4.apk.sha256
+cp app/build/outputs/apk/release/app-release.apk ./KaoToFace-0.0.5.apk
+sha256sum KaoToFace-0.0.5.apk > KaoToFace-0.0.5.apk.sha256
 ```
 
 版本号规则：每次发布最后一位 +1，逢十进一（`0.0.2 → 0.0.3 … 0.0.9 → 0.1.0`），
@@ -261,7 +261,7 @@ KAOTOFACE_KEY_ALIAS=kaotoface   # 可选
 - 记录：每次聆听生成 `日期 · 编号` 的独立记录，记录页列表、详情、分享/复制/保存通过；
   重开 App 显示最近一条非空记录。
 - 横屏控制条竖排（平行短边），按钮按竖屏物理位置一一对应，切换模式不换位。
-- 签名 release 包（`com.kaotoface.app` 0.0.4）在模拟器安装、启动通过，主界面与截图一致。
+- 签名 release 包（`com.kaotoface.app` 0.0.5）在模拟器安装、启动通过，主界面与截图一致。
 
 ---
 
