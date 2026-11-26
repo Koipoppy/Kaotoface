@@ -21,7 +21,7 @@
 
 ## 快速开始
 
-1. 构建并安装 `KaoToFace-0.0.6.apk`（Android 8.0+）。成品包不放进 Git 仓库，可用 `assembleRelease` 构建，或从 Releases 下载。
+1. 构建并安装 `KaoToFace-0.0.7.apk`（Android 8.0+）。成品包不放进 Git 仓库，可用 `assembleRelease` 构建，或从 Releases 下载。
 2. 首次启动会给麦克风与通知权限；拒绝通知不影响使用。
 3. **第一次开始聆听或播放演示**时，会在本机解压约 130MB 的离线中英语音模型（仅一次，进度可见）。
 4. 把手机放在两人中间，点中间的大按钮开始。
@@ -148,9 +148,11 @@
 - **翻译**：DeepSeek（默认 `deepseek-flash`，可在设置中从 `/models` 实时选择），
   `thinking: disabled`，JSON 输出；每段一次调用，串行队列保证上下文顺序。
   定稿返回前，目标语言一侧显示三个呼吸缓冲点；返回后用 260ms 淡入/上移动画替换。
-- **长文本**：DeepSeek 被要求先按语义分句、补中文标点，再返回 `lines[]` 双语数组；
+- **长文本**：客户端 `TextSegmenter` 先按句末标点、分句标记和长度切段（每段不超过
+  32 个汉字/180 个英文字符），逐段交给 DeepSeek；每段自动补终止标点，不再依赖模型自行分句。
   一段长话会拆成多条独立双语行，而不是一整块无标点长串。界面不再用 5 行截断最终句，
-  过长的单句会完整换行显示，由歌词列表滚动承载。
+  过长的单句会完整换行显示，由歌词列表滚动承载。翻译失败时会保留源文本并标记“未翻译”，
+  不会整段消失退回空聆听页。
 - **歌词**：Jetpack Compose；两个 `LazyColumn` 共用一个焦点索引；
   点句时立即设焦点，同时启动 340ms 的滚动与 340ms 的缩放/描边，同起同止；
   行高固定为激活字号，缩放走 `graphicsLayer`，所以高亮不会改变排版或引起文字回流；
@@ -204,8 +206,8 @@ docs/      截图
 构建完成后把正式包按版本命名放到**项目根目录**：
 
 ```bash
-cp app/build/outputs/apk/release/app-release.apk ./KaoToFace-0.0.6.apk
-sha256sum KaoToFace-0.0.6.apk > KaoToFace-0.0.6.apk.sha256
+cp app/build/outputs/apk/release/app-release.apk ./KaoToFace-0.0.7.apk
+sha256sum KaoToFace-0.0.7.apk > KaoToFace-0.0.7.apk.sha256
 ```
 
 版本号规则：每次发布最后一位 +1，逢十进一（`0.0.2 → 0.0.3 … 0.0.9 → 0.1.0`），
@@ -264,7 +266,7 @@ KAOTOFACE_KEY_ALIAS=kaotoface   # 可选
 - 记录：每次聆听生成 `日期 · 编号` 的独立记录，记录页列表、详情、分享/复制/保存通过；
   重开 App 显示最近一条非空记录。
 - 横屏控制条竖排（平行短边），按钮按竖屏物理位置一一对应，切换模式不换位。
-- 签名 release 包（`com.kaotoface.app` 0.0.6）在模拟器安装、启动通过，主界面与截图一致。
+- 签名 release 包（`com.kaotoface.app` 0.0.7）在模拟器安装、启动通过，主界面与截图一致。
 
 ---
 

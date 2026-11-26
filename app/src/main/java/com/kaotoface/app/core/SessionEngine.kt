@@ -457,16 +457,33 @@ class SessionEngine(
             removePending(snapshot.id)
             return
         }
-        chooseSource(en, zh, enConf, zhConf, preferredSource())?.let { chosen ->
-            _state.update { st ->
-                st.copy(
-                    pending = st.pending.map {
-                        if (it.id == snapshot.id) it.copy(source = chosen.first, text = chosen.second) else it
-                    },
-                )
-            }
+        val chosen = chooseSource(en, zh, enConf, zhConf, preferredSource())
+        if (chosen == null) {
+            removePending(snapshot.id)
+            return
         }
-        segments.send(Segment(en, zh, snapshot.id))
+        _state.update { st ->
+            st.copy(
+                pending = st.pending.map {
+                    if (it.id == snapshot.id) it.copy(source = chosen.first, text = chosen.second) else it
+                },
+            )
+        }
+        val chunks = TextSegmenter.split(chosen.second, chosen.first)
+        if (chunks.isEmpty()) {
+            removePending(snapshot.id)
+            return
+        }
+        chunks.forEachIndexed { index, chunk ->
+            val id = if (index == 0) snapshot.id else "${snapshot.id}-c$index"
+            segments.send(
+                Segment(
+                    en = if (chosen.first == Lang.EN) chunk else "",
+                    zh = if (chosen.first == Lang.ZH) chunk else "",
+                    id = id,
+                ),
+            )
+        }
     }
 
     private fun preferredSource(): Lang? =
@@ -558,15 +575,17 @@ class SessionEngine(
                 is JudgeOutcome.Success -> {
                     var firstAdded = false
                     outcome.lines.forEachIndexed { index, translated ->
-                        if (isDuplicate(translated.en, translated.zh)) {
+                        val en = TextSegmenter.punctuate(translated.en, Lang.EN)
+                        val zh = TextSegmenter.punctuate(translated.zh, Lang.ZH)
+                        if (isDuplicate(en, zh)) {
                             Log.d(TAG, "duplicate line ignored")
                             return@forEachIndexed
                         }
-                        val id = if (!firstAdded) segment.id else "${segment.id}-$index"
+                        val id = if (!firstAdded) segment.id else "${segment.id}-l$index"
                         val line = Utterance(
                             id = id,
-                            en = translated.en,
-                            zh = translated.zh,
+                            en = en,
+                            zh = zh,
                             source = outcome.src,
                             createdAt = System.currentTimeMillis() + index,
                             speaker = settings.nickname,
@@ -587,7 +606,25 @@ class SessionEngine(
                 }
                 JudgeOutcome.NoSpeech -> removePending(segment.id)
                 is JudgeOutcome.Failure -> {
-                    removePending(segment.id)
+                    // Never let a long/mixed/rejected translation erase the
+                    // speaker's text from the screen. Keep the source and mark
+                    // the other language as untranslated.
+                    val sourceLang = if (segment.en.isNotBlank()) Lang.EN else Lang.ZH
+                    val sourceText = if (sourceLang == Lang.EN) segment.en else segment.zh
+                    if (sourceText.isNotBlank()) {
+                        val failed = Utterance(
+                            id = segment.id,
+                            en = if (sourceLang == Lang.EN) sourceText else "(untranslated)",
+                            zh = if (sourceLang == Lang.ZH) sourceText else "（未翻译）",
+                            source = sourceLang,
+                            createdAt = System.currentTimeMillis(),
+                            failed = true,
+                            speaker = settings.nickname,
+                        )
+                        addLine(failed, remote = false, replacingPendingId = segment.id)
+                    } else {
+                        removePending(segment.id)
+                    }
                     if (outcome.message.contains("API Key") || outcome.message.contains("余额") || outcome.message.contains("权限")) {
                         _state.update { it.copy(error = outcome.message) }
                     } else {
