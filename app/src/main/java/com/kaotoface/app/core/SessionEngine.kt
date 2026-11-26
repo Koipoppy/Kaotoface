@@ -428,6 +428,33 @@ class SessionEngine(
             removePending(snapshot.id)
             return
         }
+        val pcm = if (snapshot.startByte >= 0 && snapshot.endByte > snapshot.startByte) {
+            pcmRing.snapshot(snapshot.startByte, snapshot.endByte)
+        } else null
+        if (pcm != null && pcm.isNotEmpty()) {
+            val settings = settingsStore.state.value
+            val asr = withContext(Dispatchers.IO) {
+                translator.transcribe(settings, pcm)
+            }
+            val text = asr.getOrNull()?.trim().orEmpty()
+            if (text.isNotBlank()) {
+                val lang = inferLang(text)
+                val asrText = if (lang == Lang.ZH) ChineseTextNormalizer.normalize(text) else text
+                val asrEn = if (lang == Lang.EN) asrText else ""
+                val asrZh = if (lang == Lang.ZH) asrText else ""
+                _state.update { st ->
+                    st.copy(
+                        pending = st.pending.map {
+                            if (it.id == snapshot.id) it.copy(source = lang, text = asrText) else it
+                        },
+                    )
+                }
+                Log.i(TAG, "DeepSeek ASR [$lang]: $asrText")
+                segments.send(Segment(asrEn, asrZh, snapshot.id))
+                return
+            }
+            Log.w(TAG, "DeepSeek ASR failed, falling back to Vosk: ${asr.exceptionOrNull()?.message}")
+        }
         val chosen = chooseSource(
             en,
             zh,
@@ -439,8 +466,7 @@ class SessionEngine(
             removePending(snapshot.id)
             return
         }
-        // Keep the full dual candidates. Splitting the source into one-sided
-        // chunks loses DeepSeek's cross-check between the two ASR streams.
+        // Keep the full dual candidates as a fallback path.
         _state.update { st ->
             st.copy(
                 pending = st.pending.map {
@@ -448,8 +474,14 @@ class SessionEngine(
                 },
             )
         }
-        Log.i(TAG, "group=[$en | $zh]")
+        Log.i(TAG, "Vosk fallback group=[$en | $zh]")
         segments.send(Segment(en, zh, snapshot.id))
+    }
+
+    private fun inferLang(text: String): Lang {
+        val cjk = countCjk(text)
+        val latin = countLatin(text)
+        return if (cjk > 0 && cjk >= latin) Lang.ZH else Lang.EN
     }
 
     private fun preferredSource(): Lang? =

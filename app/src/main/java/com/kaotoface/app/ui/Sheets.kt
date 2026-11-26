@@ -904,7 +904,7 @@ fun SettingsSheet(
         }
         Spacer(Modifier.height(6.dp))
         Text(
-            "密钥只保存在本机。音频不会离开设备，仅转写后的文字用于翻译。",
+            "密钥只保存在本机。Vosk 在本机做预览；句末音频会上传 DeepSeek ASR 识别，文字用于翻译。",
             color = TextLo.copy(alpha = 0.8f),
             fontFamily = Han,
             fontSize = 9.sp,

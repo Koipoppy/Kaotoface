@@ -2,6 +2,7 @@ package com.kaotoface.app.core
 
 import android.util.Log
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -116,6 +117,61 @@ class DeepSeekTranslator {
             }
         }
         return outcome ?: JudgeOutcome.Failure(lastError)
+    }
+
+    /**
+     * DeepSeek's file ASR. The API auto-detects the language and returns plain
+     * text; it is not streaming. We use it for the final utterance while Vosk
+     * remains a local preview/segmenter.
+     */
+    fun transcribe(settings: AppSettings, pcm: ByteArray): Result<String> {
+        val key = settings.apiKey.trim()
+        if (key.isBlank()) {
+            return Result.failure(IllegalStateException("未配置 DeepSeek API Key，请到设置中填写"))
+        }
+        val wav = WavCodec.wrapPcm16(pcm, AudioCapture.SAMPLE_RATE, 1)
+        val body = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart(
+                "file",
+                "utterance.wav",
+                wav.toRequestBody(AUDIO_WAV),
+            )
+            .build()
+        val request = Request.Builder()
+            .url(asrEndpoint(settings.baseUrl))
+            .header("Authorization", "Bearer $key")
+            .header("Accept", "application/json")
+            .header("User-Agent", "KaoToFace/1.0 (Android)")
+            .post(body)
+            .build()
+        return try {
+            client.newCall(request).execute().use { resp ->
+                val bodyText = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) {
+                    return Result.failure(
+                        IllegalStateException(
+                            when (resp.code) {
+                                401, 403 -> "API Key 无效或没有 ASR 权限"
+                                429 -> "ASR 请求过于频繁，请稍后再试"
+                                else -> apiError(bodyText) ?: "ASR 失败（HTTP ${resp.code}）"
+                            },
+                        ),
+                    )
+                }
+                val text = runCatching {
+                    JSONObject(bodyText).optString("text", "").trim()
+                }.getOrDefault("")
+                if (text.isBlank()) {
+                    Result.failure(IllegalStateException("ASR 返回空文本"))
+                } else {
+                    Result.success(text)
+                }
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "ASR request failed", t)
+            Result.failure(IllegalStateException("ASR 网络失败：${t.message ?: "网络错误"}"))
+        }
     }
 
     /** Reads the provider's live model catalogue; names come from the API as-is. */
@@ -312,6 +368,16 @@ class DeepSeekTranslator {
         return "$root/models"
     }
 
+    private fun asrEndpoint(base: String): String {
+        val b = base.trim().trimEnd('/')
+        return when {
+            b.endsWith("/v1/tools/asr") -> b
+            b.endsWith("/v1") -> "$b/tools/asr"
+            b.endsWith("/chat/completions") -> b.removeSuffix("/chat/completions") + "/v1/tools/asr"
+            else -> "$b/v1/tools/asr"
+        }
+    }
+
     private fun isDeepSeek(base: String) = base.contains("deepseek", ignoreCase = true)
 
     private fun systemPrompt(tone: TranslateTone): String = """
@@ -359,5 +425,6 @@ class DeepSeekTranslator {
     companion object {
         private const val TAG = "KaoTranslate"
         private val JSON = "application/json; charset=utf-8".toMediaType()
+        private val AUDIO_WAV = "audio/wav".toMediaType()
     }
 }

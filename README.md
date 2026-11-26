@@ -21,7 +21,7 @@
 
 ## 快速开始
 
-1. 构建并安装 `KaoToFace-0.0.8.apk`（Android 8.0+）。成品包不放进 Git 仓库，可用 `assembleRelease` 构建，或从 Releases 下载。
+1. 构建并安装 `KaoToFace-0.0.9.apk`（Android 8.0+）。成品包不放进 Git 仓库，可用 `assembleRelease` 构建，或从 Releases 下载。
 2. 首次启动会给麦克风与通知权限；拒绝通知不影响使用。
 3. **第一次开始聆听或播放演示**时，会在本机解压约 130MB 的离线中英语音模型（仅一次，进度可见）。
 4. 把手机放在两人中间，点中间的大按钮开始。
@@ -29,7 +29,8 @@
    完整走通识别 → 判定 → 翻译 → 歌词滚动，不需要麦克风。
 
 > 翻译引擎使用 DeepSeek；首次运行请在设置中填入你自己的 API Key（仓库源码不包含密钥）。
-> 音频全程在本机识别（Vosk），**只有转写后的文字**会发到 DeepSeek 做语言判定与翻译。
+> Vosk 只在本机做实时预览/切句；句末音频会上传到 DeepSeek ASR 识别，识别文字再由 DeepSeek 翻译。
+> 如果需要全程离线，请使用本地 ASR 方案，不要启用 DeepSeek ASR。
 > TTS 使用手机系统自带的语音合成，可在设置中开启「点按当前句子朗读」。
 
 ---
@@ -206,8 +207,8 @@ docs/      截图
 构建完成后把正式包按版本命名放到**项目根目录**：
 
 ```bash
-cp app/build/outputs/apk/release/app-release.apk ./KaoToFace-0.0.8.apk
-sha256sum KaoToFace-0.0.8.apk > KaoToFace-0.0.8.apk.sha256
+cp app/build/outputs/apk/release/app-release.apk ./KaoToFace-0.0.9.apk
+sha256sum KaoToFace-0.0.9.apk > KaoToFace-0.0.9.apk.sha256
 ```
 
 版本号规则：每次发布最后一位 +1，逢十进一（`0.0.2 → 0.0.3 … 0.0.9 → 0.1.0`），
@@ -266,7 +267,7 @@ KAOTOFACE_KEY_ALIAS=kaotoface   # 可选
 - 记录：每次聆听生成 `日期 · 编号` 的独立记录，记录页列表、详情、分享/复制/保存通过；
   重开 App 显示最近一条非空记录。
 - 横屏控制条竖排（平行短边），按钮按竖屏物理位置一一对应，切换模式不换位。
-- 签名 release 包（`com.kaotoface.app` 0.0.8）在模拟器安装、启动通过，主界面与截图一致。
+- 签名 release 包（`com.kaotoface.app` 0.0.9）在模拟器安装、启动通过，主界面与截图一致。
 
 ---
 
