@@ -77,6 +77,7 @@ import androidx.compose.ui.unit.sp
 import com.kaotoface.app.core.AppSettings
 import com.kaotoface.app.core.DiscussionRecord
 import com.kaotoface.app.core.DisplayMode
+import com.kaotoface.app.core.Languages
 import com.kaotoface.app.core.Member
 import com.kaotoface.app.core.ModelInfo
 import com.kaotoface.app.core.RoomUi
@@ -788,6 +789,7 @@ fun SettingsSheet(
     var models by remember { mutableStateOf<List<ModelInfo>>(emptyList()) }
     var modelsLoading by remember { mutableStateOf(false) }
     var modelsError by remember { mutableStateOf<String?>(null) }
+    var languagePicker by remember { mutableStateOf<String?>(null) }
 
     fun loadModels() {
         if (modelsLoading) return
@@ -839,6 +841,62 @@ fun SettingsSheet(
                         KaoGlyph(KaoIcon.Close, TextLo, Modifier.size(13.dp))
                         Text("取消", color = TextLo, fontFamily = Han)
                     }
+                }
+            },
+        )
+    }
+
+    languagePicker?.let { which ->
+        AlertDialog(
+            onDismissRequest = { languagePicker = null },
+            containerColor = InkSoft,
+            title = {
+                Text(
+                    if (which == "A") "选择语言 A" else "选择语言 B",
+                    color = TextHi,
+                    fontFamily = Han,
+                    fontWeight = FontWeight.Bold,
+                )
+            },
+            text = {
+                Column(
+                    Modifier
+                        .heightIn(max = 420.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Languages.all.forEach { language ->
+                        val selected = if (which == "A") settings.langA == language.code else settings.langB == language.code
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(if (selected) Color(0x0F111827) else Color.Transparent)
+                                .clickable {
+                                    if (which == "A") settingsStore.setLangA(language.code)
+                                    else settingsStore.setLangB(language.code)
+                                    languagePicker = null
+                                }
+                                .padding(horizontal = 12.dp, vertical = 11.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                language.label,
+                                color = if (selected) TextHi else TextMid,
+                                fontFamily = Han,
+                                fontSize = 12.sp,
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (selected) {
+                                KaoGlyph(KaoIcon.Check, TextHi, Modifier.size(13.dp))
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { languagePicker = null }) {
+                    Text("取消", color = TextLo, fontFamily = Han)
                 }
             },
         )
@@ -969,6 +1027,31 @@ fun SettingsSheet(
             onValueChange = { settingsStore.setBaseUrl(it) },
             placeholder = "https://api.deepseek.com",
             keyboardType = KeyboardType.Uri,
+        )
+
+        SheetDivider()
+        SectionLabel("两侧语言")
+        Spacer(Modifier.height(12.dp))
+        ActionRow(
+            icon = KaoIcon.Swap,
+            title = "语言 A",
+            subtitle = Languages.label(settings.langA),
+            onClick = { languagePicker = "A" },
+        )
+        Spacer(Modifier.height(8.dp))
+        ActionRow(
+            icon = KaoIcon.Swap,
+            title = "语言 B",
+            subtitle = Languages.label(settings.langB),
+            onClick = { languagePicker = "B" },
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "A / B 为两侧语言；选到另一侧正在用的语言会自动对调。交换键只换位置，不改语言。",
+            color = TextLo,
+            fontFamily = Han,
+            fontSize = 9.sp,
+            lineHeight = 14.sp,
         )
 
         SheetDivider()

@@ -14,7 +14,7 @@ class TtsPlayer(context: Context) {
     private var pending: Pending? = null
     private var onDoneCallback: (() -> Unit)? = null
 
-    private data class Pending(val text: String, val lang: Lang, val onDone: () -> Unit)
+    private data class Pending(val text: String, val languageTag: String, val onDone: () -> Unit)
 
     init {
         tts = TextToSpeech(context.applicationContext) { status ->
@@ -41,7 +41,7 @@ class TtsPlayer(context: Context) {
                 })
                 pending?.let {
                     pending = null
-                    speak(it.text, it.lang, it.onDone)
+                    speak(it.text, it.languageTag, it.onDone)
                 }
             }
         }
@@ -50,15 +50,15 @@ class TtsPlayer(context: Context) {
     val isAvailable: Boolean get() = ready && !failed
 
     /** Returns false when the device has no usable TTS engine for this language. */
-    fun speak(text: String, lang: Lang, onDone: () -> Unit): Boolean {
+    fun speak(text: String, languageTag: String, onDone: () -> Unit): Boolean {
         if (text.isBlank()) return false
         val engine = tts ?: return false
         if (failed) return false
         if (!ready) {
-            pending = Pending(text, lang, onDone)
+            pending = Pending(text, languageTag, onDone)
             return true
         }
-        val locale = if (lang == Lang.EN) Locale.US else Locale.SIMPLIFIED_CHINESE
+        val locale = Locale.forLanguageTag(languageTag)
         val res = engine.setLanguage(locale)
         if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
             onDone()

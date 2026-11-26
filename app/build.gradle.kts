@@ -21,8 +21,8 @@ android {
         // Version policy: patch +1 each shipped iteration, carry at ten:
         // 0.0.2 -> 0.0.3 ... 0.0.9 -> 0.1.0 ... 0.9.9 -> 1.0.0.
         // versionCode always increments by one with each release.
-        versionCode = 10
-        versionName = "0.1.0"
+        versionCode = 11
+        versionName = "0.1.1"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")

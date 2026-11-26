@@ -23,6 +23,8 @@ class SettingsStore(context: Context) {
             nickname = prefs.getString(KEY_NAME, null) ?: AppSettings.defaultNickname,
             mode = DisplayMode.fromKey(prefs.getString(KEY_MODE, def.mode.key)),
             enFirst = prefs.getBoolean(KEY_EN_FIRST, def.enFirst),
+            langA = Languages.of(prefs.getString(KEY_LANG_A, def.langA) ?: def.langA).code,
+            langB = Languages.of(prefs.getString(KEY_LANG_B, def.langB) ?: def.langB).code,
         )
     }
 
@@ -81,6 +83,30 @@ class SettingsStore(context: Context) {
         _state.update { it.copy(enFirst = value) }
     }
 
+    fun setLangA(value: String) {
+        val v = Languages.of(value).code
+        val current = _state.value
+        // Picking the language already used on the other side swaps the pair
+        // instead of leaving both sides in the same language.
+        val other = if (v == current.langB) current.langA else current.langB
+        edit {
+            it.putString(KEY_LANG_A, v)
+            it.putString(KEY_LANG_B, other)
+        }
+        _state.update { it.copy(langA = v, langB = other) }
+    }
+
+    fun setLangB(value: String) {
+        val v = Languages.of(value).code
+        val current = _state.value
+        val other = if (v == current.langA) current.langB else current.langA
+        edit {
+            it.putString(KEY_LANG_B, v)
+            it.putString(KEY_LANG_A, other)
+        }
+        _state.update { it.copy(langB = v, langA = other) }
+    }
+
     private companion object {
         const val KEY_API = "api_key"
         const val KEY_BASE = "base_url"
@@ -91,5 +117,7 @@ class SettingsStore(context: Context) {
         const val KEY_NAME = "nickname"
         const val KEY_MODE = "mode"
         const val KEY_EN_FIRST = "en_first"
+        const val KEY_LANG_A = "lang_a"
+        const val KEY_LANG_B = "lang_b"
     }
 }

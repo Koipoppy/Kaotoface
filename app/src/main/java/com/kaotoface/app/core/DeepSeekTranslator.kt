@@ -120,9 +120,162 @@ class DeepSeekTranslator {
     }
 
     /**
+     * Translate an automatically transcribed utterance into the two configured
+     * side languages. The model identifies which side the ASR text belongs to,
+     * proofreads it, and returns aligned A/B lines.
+     */
+    fun translateAsr(
+        settings: AppSettings,
+        text: String,
+        recent: List<Utterance>,
+        langAName: String,
+        langBName: String,
+    ): JudgeOutcome {
+        if (text.isBlank()) return JudgeOutcome.NoSpeech
+        val key = settings.apiKey.trim()
+        if (key.isBlank()) return JudgeOutcome.Failure("未配置 DeepSeek API Key，请到设置中填写")
+        val payload = JSONObject().apply {
+            put("model", settings.model)
+            put(
+                "messages",
+                JSONArray().apply {
+                    put(
+                        JSONObject().put("role", "system").put(
+                            "content",
+                            asrSystemPrompt(settings.tone, langAName, langBName),
+                        ),
+                    )
+                    put(
+                        JSONObject().put("role", "user").put(
+                            "content",
+                            asrUserPrompt(text, recent, langAName, langBName),
+                        ),
+                    )
+                },
+            )
+            put("max_tokens", 2400)
+            put("temperature", 0.1)
+            put("stream", false)
+            put("response_format", JSONObject().put("type", "json_object"))
+            if (isDeepSeek(settings.baseUrl)) {
+                put("thinking", JSONObject().put("type", "disabled"))
+            }
+        }
+        val request = Request.Builder()
+            .url(endpoint(settings.baseUrl))
+            .header("Authorization", "Bearer $key")
+            .header("Accept", "application/json")
+            .header("User-Agent", "KaoToFace/1.0 (Android)")
+            .post(payload.toString().toRequestBody(JSON))
+            .build()
+        var lastError = "翻译服务暂时不可用"
+        var attempt = 0
+        while (attempt < 2) {
+            val started = System.currentTimeMillis()
+            try {
+                client.newCall(request).execute().use { resp ->
+                    val body = resp.body?.string().orEmpty()
+                    if (resp.isSuccessful) {
+                        val content = extractContent(body)
+                            ?: return JudgeOutcome.Failure("翻译服务返回空内容")
+                        return parseAsrResult(content, started)
+                    }
+                    when (resp.code) {
+                        401, 403 -> return JudgeOutcome.Failure("API Key 无效或没有权限")
+                        402 -> return JudgeOutcome.Failure("DeepSeek 账户余额不足")
+                        429 -> return JudgeOutcome.Failure("请求过于频繁，请稍后再试")
+                        in 500..599 -> lastError = "翻译服务异常（${resp.code}）"
+                        else -> return JudgeOutcome.Failure(apiError(body) ?: "翻译失败（HTTP ${resp.code}）")
+                    }
+                }
+            } catch (e: IOException) {
+                Log.w(TAG, "ASR translation failed (attempt ${attempt + 1})", e)
+                lastError = "网络连接失败，请检查网络"
+            } catch (t: Throwable) {
+                Log.w(TAG, "ASR translation failed", t)
+                return JudgeOutcome.Failure("翻译失败：${t.message ?: "未知错误"}")
+            }
+            attempt++
+            if (attempt < 2) Thread.sleep(450)
+        }
+        return JudgeOutcome.Failure(lastError)
+    }
+
+    private fun parseAsrResult(content: String, started: Long): JudgeOutcome {
+        val jsonText = stripFence(content)
+        val obj = runCatching { JSONObject(jsonText) }.getOrElse {
+            Log.w(TAG, "bad ASR translation JSON: $content")
+            return JudgeOutcome.Failure("翻译结果格式异常")
+        }
+        val src = obj.optString("src", "").trim().lowercase()
+        if (src == "none") return JudgeOutcome.NoSpeech
+        val lines = mutableListOf<TranslatedLine>()
+        val array = obj.optJSONArray("lines")
+        if (array != null) {
+            for (i in 0 until array.length()) {
+                val item = array.optJSONObject(i) ?: continue
+                val a = cleanup(item.optString("a", item.optString("en", "")))
+                val b = cleanup(item.optString("b", item.optString("zh", "")))
+                if (a.isNotBlank() && b.isNotBlank()) lines += TranslatedLine(a, b)
+            }
+        }
+        if (lines.isEmpty()) {
+            val a = cleanup(obj.optString("a", obj.optString("en", "")))
+            val b = cleanup(obj.optString("b", obj.optString("zh", "")))
+            if (a.isNotBlank() && b.isNotBlank()) lines += TranslatedLine(a, b)
+        }
+        if (lines.isEmpty()) return JudgeOutcome.Failure("翻译结果不完整")
+        val source = if (src == "b" || src.startsWith("zh")) Lang.ZH else Lang.EN
+        return JudgeOutcome.Success(
+            src = source,
+            lines = lines,
+            latencyMs = System.currentTimeMillis() - started,
+        )
+    }
+
+    private fun asrSystemPrompt(tone: TranslateTone, langAName: String, langBName: String): String = """
+        你是专业的双语校订/翻译引擎。两侧语言固定为：
+        A = $langAName
+        B = $langBName
+        输入是一段自动语音识别的原始文本，可能属于 A 或 B；若两种都不是，优先保持原意并翻译到 B。
+        工作步骤：
+        1. 判断这段文本属于 A 还是 B。
+        2. 校订识别错误、同音字、断句和标点；不要改写原意，不添加信息，不改数字、金额、时间和否定关系。
+        3. 翻译成另一侧，并确保两侧语言都是各自的目标语言。
+        4. 数字、金额、时间必须保留；长段按语义拆成多个完整句子。
+        5. 中文必须使用中文标点，不要输出无标点长串。${tone.prompt}
+
+        只输出严格 JSON：
+        {"src":"a"|"b"|"none","lines":[{"a":"...","b":"..."}]}
+        每个 line 是一句完整的话，A/B 行数与顺序一致。不要输出解释或 Markdown。
+    """.trimIndent()
+
+    private fun asrUserPrompt(
+        text: String,
+        recent: List<Utterance>,
+        langAName: String,
+        langBName: String,
+    ): String = buildString {
+        val ctx = recent.takeLast(2).filter { it.en.isNotBlank() && it.zh.isNotBlank() }
+        if (ctx.isNotEmpty()) {
+            appendLine("最近两句（仅供上下文，不要翻译或重复）：")
+            ctx.forEach {
+                appendLine("A($langAName): ${it.en}")
+                appendLine("B($langBName): ${it.zh}")
+            }
+            appendLine()
+        }
+        append("asr_text: $text")
+        if (LanguageHeuristics.hasAmount(text)) {
+            appendLine()
+            append("提示：文本包含数字/金额，校订和翻译时必须保留原值。")
+        }
+    }
+
+    /**
      * DeepSeek's file ASR. The API auto-detects the language and returns plain
      * text; it is not streaming. We use it for the final utterance after VAD
-     * remains a local preview/segmenter.
+     * segmentation.
      */
     fun transcribe(settings: AppSettings, pcm: ByteArray): Result<String> {
         val key = settings.apiKey.trim()

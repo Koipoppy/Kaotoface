@@ -411,6 +411,7 @@ fun LyricsPanel(
                             placeholder = isPending && text.isBlank(),
                             provisional = isPending,
                             skeleton = isSkeleton,
+                            skeletonStart = u.createdAt,
                             live = isLive,
                             // DeepSeek already splits long speech into sentences;
                             // never hide a finished sentence behind an ellipsis.
@@ -489,6 +490,7 @@ private fun LyricRow(
     placeholder: Boolean = false,
     provisional: Boolean = false,
     skeleton: Boolean = false,
+    skeletonStart: Long = 0L,
     live: Boolean = false,
     maxLines: Int = 5,
     onClick: () -> Unit,
@@ -512,6 +514,27 @@ private fun LyricRow(
     }
     val alpha = (baseAlpha * (1f - amount) + amount).coerceIn(0f, 1f)
     val annotated = bilingualText(text)
+    var revealedChars by remember { mutableStateOf(text.length) }
+    var wasSkeleton by remember { mutableStateOf(skeleton) }
+    var lastText by remember { mutableStateOf(text) }
+    LaunchedEffect(text, skeleton) {
+        if (skeleton) {
+            revealedChars = 0
+        } else if (text.isNotEmpty() && (wasSkeleton || lastText.isBlank())) {
+            // Replace the skeleton/empty row with a character-by-character
+            // reveal; 28 steps keeps even long ASR text under ~500ms.
+            revealedChars = 0
+            val step = maxOf(1, text.length / 28)
+            while (revealedChars < text.length) {
+                delay(18)
+                revealedChars = (revealedChars + step).coerceAtMost(text.length)
+            }
+        } else {
+            revealedChars = text.length
+        }
+        wasSkeleton = skeleton
+        lastText = text
+    }
     val interaction = remember { MutableInteractionSource() }
     val haptic = LocalHapticFeedback.current
     val textStyle = TextStyle(
@@ -562,13 +585,28 @@ private fun LyricRow(
                         contentAlignment = Alignment.Center,
                     ) {
                         if (skeleton) {
-                            SkeletonBars(color = TextMid.copy(alpha = 0.72f))
+                            SkeletonSquares(
+                                startedAt = skeletonStart,
+                                color = TextMid.copy(alpha = 0.72f),
+                            )
                         } else {
                             BufferDots(color = TextMid.copy(alpha = 0.90f))
                         }
                     }
                 } else {
-                    LyricContent(content, textColor, amount, strokePx, maxLines, textStyle)
+                    val display = if (skeleton || text.isBlank()) {
+                        ""
+                    } else {
+                        text.take(revealedChars)
+                    }
+                    LyricContent(
+                        bilingualText(display),
+                        textColor,
+                        amount,
+                        strokePx,
+                        maxLines,
+                        textStyle,
+                    )
                 }
             }
         }
@@ -641,35 +679,47 @@ private fun BufferDots(color: Color, modifier: Modifier = Modifier) {
     }
 }
 
-/** Gray skeleton blocks shown while DeepSeek ASR is working. */
+/** Bouncing gray squares; their count grows with the speaking duration. */
 @Composable
-private fun SkeletonBars(color: Color, modifier: Modifier = Modifier) {
+private fun SkeletonSquares(
+    startedAt: Long,
+    color: Color,
+    modifier: Modifier = Modifier,
+) {
+    var count by remember(startedAt) { mutableStateOf(3) }
+    LaunchedEffect(startedAt) {
+        while (true) {
+            val elapsed = System.currentTimeMillis() - startedAt
+            count = (3 + elapsed / 350L).toInt().coerceIn(3, 8)
+            delay(180)
+        }
+    }
     val transition = rememberInfiniteTransition(label = "skeleton")
     val phase by transition.animateFloat(
         initialValue = 0f,
-        targetValue = 1f,
+        targetValue = 6.283f,
         animationSpec = infiniteRepeatable(
-            animation = tween(1100, easing = LinearEasing),
+            animation = tween(900, easing = LinearEasing),
             repeatMode = RepeatMode.Restart,
         ),
         label = "skeletonPhase",
     )
-    val widths = listOf(22.dp, 38.dp, 28.dp, 16.dp)
+    val bounce = with(LocalDensity.current) { 3.dp.toPx() }
     Row(
         modifier = modifier,
         horizontalArrangement = Arrangement.spacedBy(7.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        widths.forEachIndexed { index, width ->
-            val wave = 0.5f + 0.5f * kotlin.math.sin(
-                (phase * 2f * kotlin.math.PI.toFloat()) - index * 0.75f,
-            )
+        repeat(count) { index ->
+            val wave = kotlin.math.sin(phase + index * 0.9f)
             Box(
                 Modifier
-                    .width(width)
-                    .height(7.dp)
-                    .graphicsLayer { alpha = 0.34f + 0.46f * wave }
-                    .background(color, RoundedCornerShape(4.dp)),
+                    .size(9.dp)
+                    .graphicsLayer {
+                        translationY = wave * bounce
+                        alpha = 0.38f + 0.42f * (0.5f + 0.5f * wave)
+                    }
+                    .background(color, RoundedCornerShape(2.dp)),
             )
         }
     }

@@ -136,6 +136,9 @@ data class AppSettings(
     val nickname: String = "我的设备",
     val mode: DisplayMode = DisplayMode.LANDSCAPE,
     val enFirst: Boolean = true,
+    /** Side A/B language codes; en/zh text fields represent these two sides. */
+    val langA: String = "en",
+    val langB: String = "zh",
 ) {
     companion object {
         const val DEFAULT_API_KEY = ""

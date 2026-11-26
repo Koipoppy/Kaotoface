@@ -301,28 +301,82 @@ class SessionEngine(
                 _state.update { it.copy(notice = "这一句未识别：${asr.exceptionOrNull()?.message ?: "空结果"}") }
                 return
             }
-            val lang = inferLang(text)
-            val clean = if (lang == Lang.ZH) ChineseTextNormalizer.normalize(text) else text
-            _state.update { st ->
-                st.copy(
-                    pending = st.pending.map {
-                        if (it.id == utterance.id) {
-                            it.copy(source = lang, text = clean, skeleton = false)
-                        } else it
-                    },
+            val settings = settingsStore.state.value
+            val recent = _state.value.lines.takeLast(2)
+            val outcome = withContext(Dispatchers.IO) {
+                translator.translateAsr(
+                    settings = settings,
+                    text = text,
+                    recent = recent,
+                    langAName = Languages.label(settings.langA),
+                    langBName = Languages.label(settings.langB),
                 )
             }
-            Log.i(TAG, "DeepSeek ASR [$lang]: $clean")
-            segments.send(
-                Segment(
-                    en = if (lang == Lang.EN) clean else "",
-                    zh = if (lang == Lang.ZH) clean else "",
-                    id = utterance.id,
-                ),
-            )
+            Log.i(TAG, "DeepSeek ASR: $text")
+            applyAsrOutcome(utterance.id, settings, text, outcome)
         } finally {
             asrPending.updateAndGet { (it - 1).coerceAtLeast(0) }
         }
+    }
+
+    private fun applyAsrOutcome(
+        id: String,
+        settings: AppSettings,
+        asrText: String,
+        outcome: JudgeOutcome,
+    ) {
+        when (outcome) {
+            is JudgeOutcome.Success -> {
+                var firstAdded = false
+                outcome.lines.forEachIndexed { index, translated ->
+                    val a = punctuateFor(translated.en, settings.langA)
+                    val b = punctuateFor(translated.zh, settings.langB)
+                    if (isDuplicate(a, b)) return@forEachIndexed
+                    val lineId = if (!firstAdded) id else "$id-l$index"
+                    val line = Utterance(
+                        id = lineId,
+                        en = a,
+                        zh = b,
+                        source = outcome.src,
+                        createdAt = System.currentTimeMillis() + index,
+                        speaker = settings.nickname,
+                    )
+                    addLine(
+                        line,
+                        remote = false,
+                        replacingPendingId = if (!firstAdded) id else null,
+                    )
+                    roomHost?.broadcastLine(line)
+                    roomClient?.sendLine(line)
+                    firstAdded = true
+                    Log.i(TAG, "line ${outcome.src}: $a / $b (${outcome.latencyMs}ms)")
+                }
+                if (!firstAdded) removePending(id)
+            }
+            JudgeOutcome.NoSpeech,
+            is JudgeOutcome.Failure,
+            -> {
+                val failed = Utterance(
+                    id = id,
+                    en = asrText,
+                    zh = "（未翻译）",
+                    source = Lang.EN,
+                    failed = true,
+                    speaker = settings.nickname,
+                )
+                addLine(failed, remote = false, replacingPendingId = id)
+                val msg = (outcome as? JudgeOutcome.Failure)?.message
+                _state.update {
+                    it.copy(notice = if (msg.isNullOrBlank()) "这一句未翻译" else "这一句未翻译：$msg")
+                }
+            }
+        }
+    }
+
+    private fun punctuateFor(text: String, code: String): String = when (code) {
+        "en" -> TextSegmenter.punctuate(text, Lang.EN)
+        "zh", "yue" -> TextSegmenter.punctuate(text, Lang.ZH)
+        else -> text
     }
 
     private fun inferLang(text: String): Lang {
@@ -558,8 +612,10 @@ class SessionEngine(
         val text = line.text(lang)
         if (text.isBlank()) return
         val player = tts ?: TtsPlayer(context).also { tts = it }
+        val settings = settingsStore.state.value
+        val tag = Languages.ttsTag(if (lang == Lang.EN) settings.langA else settings.langB)
         audio?.paused = true
-        val accepted = player.speak(text, lang) {
+        val accepted = player.speak(text, tag) {
             audio?.paused = false
         }
         if (!accepted) {

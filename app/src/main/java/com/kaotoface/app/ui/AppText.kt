@@ -33,7 +33,11 @@ private fun isCjk(c: Char): Boolean {
     val code = c.code
     return (code in 0x4E00..0x9FFF) || (code in 0x3400..0x4DBF) ||
         (code in 0xF900..0xFAFF) || (code in 0x3000..0x303F) ||
-        (code in 0xFF00..0xFFEF) || c == '·' || c == '—' || c == '…'
+        (code in 0xFF00..0xFFEF) ||
+        // Kana and Hangul need the CJK face too: Jost has no glyphs for them.
+        (code in 0x3040..0x30FF) || (code in 0xAC00..0xD7AF) ||
+        (code in 0x1100..0x11FF) ||
+        c == '·' || c == '—' || c == '…'
 }
 
 private fun scriptStyled(text: String, weight: FontWeight): AnnotatedString = buildAnnotatedString {
