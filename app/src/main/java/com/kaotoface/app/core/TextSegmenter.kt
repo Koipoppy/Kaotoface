@@ -1,7 +1,7 @@
 package com.kaotoface.app.core
 
 /**
- * Deterministic client-side fallback for long speech. Vosk/DeepSeek can return
+ * Deterministic client-side fallback for long speech. DeepSeek can return
  * one unpunctuated paragraph; this splits it into sentences/clauses small
  * enough to read and gives every chunk a terminal mark. The LLM translates
  * each chunk separately, so sentence boundaries no longer depend on the model.

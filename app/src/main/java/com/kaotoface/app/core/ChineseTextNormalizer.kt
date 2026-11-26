@@ -1,7 +1,7 @@
 package com.kaotoface.app.core
 
 /**
- * Vosk's Chinese small model returns word tokens separated by spaces and is
+ * Chinese ASR returns word tokens separated by spaces and is
  * prone to homophone errors inside amounts. Normalise the display and repair
  * the observed number homophone when it is clearly inside a numeric span;
  * otherwise leave the sentence alone.

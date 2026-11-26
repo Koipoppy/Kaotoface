@@ -21,16 +21,16 @@
 
 ## 快速开始
 
-1. 构建并安装 `KaoToFace-0.0.9.apk`（Android 8.0+）。成品包不放进 Git 仓库，可用 `assembleRelease` 构建，或从 Releases 下载。
+1. 构建并安装 `KaoToFace-0.1.0.apk`（Android 8.0+）。成品包不放进 Git 仓库，可用 `assembleRelease` 构建，或从 Releases 下载。
 2. 首次启动会给麦克风与通知权限；拒绝通知不影响使用。
-3. **第一次开始聆听或播放演示**时，会在本机解压约 130MB 的离线中英语音模型（仅一次，进度可见）。
-4. 把手机放在两人中间，点中间的大按钮开始。
+3. 首次聆听会启动本地能量 VAD，不需要下载或解压任何语音模型；识别走 DeepSeek ASR，需要网络和 API Key。
+4. 把手机放在两人中间，点中间的大按钮开始；说话时显示灰色骨架块，句末识别后再出现文字。
 5. 想先看效果：打开设置 →「播放演示对话」，会播放一段内置的中英双语会议录音，
-   完整走通识别 → 判定 → 翻译 → 歌词滚动，不需要麦克风。
+   完整走通 VAD 切句 → DeepSeek ASR → 翻译 → 歌词滚动，不需要麦克风。
 
-> 翻译引擎使用 DeepSeek；首次运行请在设置中填入你自己的 API Key（仓库源码不包含密钥）。
-> Vosk 只在本机做实时预览/切句；句末音频会上传到 DeepSeek ASR 识别，识别文字再由 DeepSeek 翻译。
-> 如果需要全程离线，请使用本地 ASR 方案，不要启用 DeepSeek ASR。
+> 识别和翻译都使用 DeepSeek；首次运行请在设置中填入你自己的 API Key（仓库源码不包含密钥）。
+> 本地只做 VAD 切句和预录；句末音频会上传到 DeepSeek ASR，识别文字再由 DeepSeek 翻译。
+> 这意味着**不再有本地离线识别**，也没有 Vosk 回退。
 > TTS 使用手机系统自带的语音合成，可在设置中开启「点按当前句子朗读」。
 
 ---
@@ -117,43 +117,33 @@
 ```
 麦克风 16kHz PCM
    │
-   ├─ Vosk EN 小模型 ──> partial ──> 源语言临时字幕（本地）
-   └─ Vosk ZH 小模型 ──> partial ──> 对侧缓冲点占位
-                            │
-                         final + 700ms 聚合
-                            │
-                            ▼
-             DeepSeek（句末一次调用，约 0.5–1.2s）
-             1. 判断哪个候选是真实连贯语音（另一个是模型对异语的音近乱码）
-             2. 校订同音字 / 断句，补标点
-             3. 输出 {"src","en","zh"} 双语对照
-                            │
-                            ▼
-          目标语言淡入 + 上移，替换缓冲点（源语言同步换成校订稿）
-                            │
-              双语歌词时间线（同索引对齐、共享焦点）
-                 │                 │
-              本地持久化         房间广播（TCP JSON 行）
+   └─ 本地能量 VAD（700ms 预录 + 700ms 静音断句）
+          │
+          ├─ 说话中：灰色骨架块（两侧）
+          │
+          └─ 句末：PCM 包 WAV ──> DeepSeek ASR
+                                  │  自动检测语言/21 种语言
+                                  ▼
+                          DeepSeek 翻译/校订
+                                  │  lines[] 多句 + 标点
+                                  ▼
+                源文本先淡入；目标文本再淡入 + 上移
+                                  │
+                    双语歌词时间线（同索引对齐）
+                       │                 │
+                    本地持久化         房间广播（TCP JSON 行）
 ```
 
-- **识别**：Vosk small EN / ZH，完全离线，双模型同时喂同一路音频。
-  partial 只在本机显示成临时源语言字幕，不会发给 DeepSeek；final 才进入句末处理。
-  两路结果都交给 LLM 判定，因此不需要单独的语种分类器，也能修正识别错字。
-- **首字修复**：持续保留最近 12 秒 PCM；检测到 Vosk partial 时记下句首前 0.8 秒，
-  句末用新建的 Vosk 识别器对这段音频整段重解码。同语言多个 final 会拼接而不是覆盖，
-  700ms 聚合计时器在每次 final 后重置，避免首字被 streaming endpoint 吞掉。
-- **语种/数字证据**：两路 Vosk 始终同时接收同一路 PCM。选候选时**数字/金额证据优先**：
-  中文候选含「390元 / 三百九十元」而英文候选没有时，不允许英文音近串（如 “standby to syria”）
-  抢走中文；当前句的汉字/拉丁脚本证据也优先于上一句语言。DeepSeek 系统提示同样要求保留金额，
-  并在结果解析时对金额证据做强制源语言校正。
+- **识别**：Vosk 已移除。音频先经过本地能量 VAD 切句（700ms 预录、700ms 静音断句、
+  单句最长 20 秒），句末 WAV 上传 DeepSeek ASR；ASR 自动检测语言，不再有中英两套模型抢候选。
+- **首字/延迟**：VAD 从语音起点前 700ms 开始保留 PCM，所以首字在音频里；说话时不再显示
+  不可靠的 partial 文本，而是灰色骨架块。DeepSeek ASR 是非流式的，源文本要等句末识别返回。
+- **数字/金额**：源文本经 DeepSeek ASR 后仍保留金额规范化；翻译提示要求数字、金额、时间不得改写。
 - **翻译**：DeepSeek（默认 `deepseek-flash`，可在设置中从 `/models` 实时选择），
   `thinking: disabled`，JSON 输出；每段一次调用，串行队列保证上下文顺序。
-  定稿返回前，目标语言一侧显示三个呼吸缓冲点；返回后用 260ms 淡入/上移动画替换。
-- **长文本**：客户端 `TextSegmenter` 先按句末标点、分句标记和长度切段（每段不超过
-  32 个汉字/180 个英文字符），逐段交给 DeepSeek；每段自动补终止标点，不再依赖模型自行分句。
-  一段长话会拆成多条独立双语行，而不是一整块无标点长串。界面不再用 5 行截断最终句，
-  过长的单句会完整换行显示，由歌词列表滚动承载。翻译失败时会保留源文本并标记“未翻译”，
-  不会整段消失退回空聆听页。
+- **长文本**：DeepSeek 被要求按语义分句并返回 `lines[]` 双语数组；界面最终句不再用 5 行
+  省略号截断，过长句子完整换行，由歌词列表滚动承载。翻译失败时保留源文本并标记“未翻译”，
+  不会整段消失退回空聆听页。DeepSeek ASR 服务端单文件上限 120 秒/8 MiB。
 - **歌词**：Jetpack Compose；两个 `LazyColumn` 共用一个焦点索引；
   点句时立即设焦点，同时启动 340ms 的滚动与 340ms 的缩放/描边，同起同止；
   行高固定为激活字号，缩放走 `graphicsLayer`，所以高亮不会改变排版或引起文字回流；
@@ -179,14 +169,13 @@
 
 ```
 app/src/main/java/com/kaotoface/app/
-  core/     SessionEngine, AudioCapture, VoskDual, DeepSeekTranslator,
-            Exporter, HistoryStore, TTS, Settings
+  core/     SessionEngine, AudioCapture, UtteranceVad, PcmRingBuffer,
+            DeepSeekTranslator, WavCodec, Exporter, HistoryStore, TTS, Settings
   room/     RoomHost, RoomClient, LanDiscovery, RoomWire
   service/  TranslationService（前台服务 + 通知）
   ui/       Lyrics, AppText（Jost/思源分段）, Chrome（固定控制簇）, Sheets, 主题
 app/src/main/assets/
-  vosk/en, vosk/zh   离线中英模型
-  demo/conversation.wav   演示对话
+  demo/conversation.wav   演示对话（不再打包 Vosk 模型）
 app/src/main/res/font/   Jost + 思源黑体 + Phosphor Fill
 app/src/main/res/drawable/ic_ear.xml   线稿耳朵
 tools/     音频测试脚本、房间测试客户端、签名密钥
@@ -207,11 +196,11 @@ docs/      截图
 构建完成后把正式包按版本命名放到**项目根目录**：
 
 ```bash
-cp app/build/outputs/apk/release/app-release.apk ./KaoToFace-0.0.9.apk
-sha256sum KaoToFace-0.0.9.apk > KaoToFace-0.0.9.apk.sha256
+cp app/build/outputs/apk/release/app-release.apk ./KaoToFace-0.1.0.apk
+sha256sum KaoToFace-0.1.0.apk > KaoToFace-0.1.0.apk.sha256
 ```
 
-版本号规则：每次发布最后一位 +1，逢十进一（`0.0.2 → 0.0.3 … 0.0.9 → 0.1.0`），
+版本号规则：每次发布最后一位 +1，逢十进一（`0.0.2 → 0.0.3 … 0.1.0 → 0.1.0`），
 `versionCode` 同步 +1。
 ```
 
@@ -232,14 +221,14 @@ KAOTOFACE_KEY_ALIAS=kaotoface   # 可选
 
 ## 已知限制
 
-- Vosk 小模型体积小、离线，识别质量中等；DeepSeek 会修正常见同音字，但强口音、嘈杂环境、
-  多人抢话时仍可能出错。英文与中文之外的语种不支持。
-- 翻译仍是**句子级**：源语言 partial 会实时出现，但目标语言要等 Vosk 句末、700ms 聚合和
-  DeepSeek 校订/翻译返回后才出现；不是逐词同传。DeepSeek 不处理 partial，避免请求风暴和文字抖动。
-- 翻译需要联网；断网时当前句会提示失败，不影响本机已记录的句子。
+- **识别与翻译都需要联网**：本地只做能量 VAD 切句；没有本地 ASR，也没有 Vosk 回退。
+  DeepSeek ASR 服务端单文件上限 120 秒/8 MiB，非流式。
+- VAD 是能量阈值；强噪声、多人同时说话时可能切句不准，必要时可以再换 Silero VAD。
+- 源文本要等句末和 DeepSeek ASR 返回后才出现；说话时只有灰色骨架块，不是实时 partial。
+- 翻译仍是**句子级**：目标语言还要再等一次 DeepSeek 翻译/校订；不是逐词同传。
+- 翻译/ASR 失败时保留源文本并提示未识别/未翻译，不会整段消失或退回空聆听页。
 - 设置页的模型列表通过 `/models` 实时读取，需要网络；读取失败会保留当前模型，可点刷新重试。
 - 房间靠四位暗号识别，无加密、无认证，仅适合可信局域网。四人以上可用，但建议一台设备收音。
-- 首次启动解压模型约占 130MB 存储；App 常驻内存中英双模型约需 200MB 级。
 - 系统 TTS 是否支持中英双语取决于手机；不支持时会给出提示。
 - 应用会隐藏系统状态栏；从屏幕顶部下滑仍可临时呼出系统栏。
 - 真机录音时，部分 Android 系统会强制显示绿色的麦克风隐私标识；它属于系统 UI，不能改色或彻底隐藏。
@@ -267,13 +256,12 @@ KAOTOFACE_KEY_ALIAS=kaotoface   # 可选
 - 记录：每次聆听生成 `日期 · 编号` 的独立记录，记录页列表、详情、分享/复制/保存通过；
   重开 App 显示最近一条非空记录。
 - 横屏控制条竖排（平行短边），按钮按竖屏物理位置一一对应，切换模式不换位。
-- 签名 release 包（`com.kaotoface.app` 0.0.9）在模拟器安装、启动通过，主界面与截图一致。
+- 签名 release 包（`com.kaotoface.app` 0.1.0）在模拟器安装、启动通过，主界面与截图一致。
 
 ---
 
 ## 致谢与许可
 
-- [Vosk](https://alphacephei.com/vosk/) — 离线语音识别（Apache-2.0）
 - [DeepSeek API](https://api.deepseek.com) — 语言判定与翻译
 - [Jost](https://fonts.google.com/specimen/Jost) — SIL Open Font License 1.1
 - [思源黑体 / Noto Sans CJK SC](https://github.com/notofonts/noto-cjk) — SIL Open Font License 1.1

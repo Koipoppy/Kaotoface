@@ -359,6 +359,7 @@ fun LyricsPanel(
     english: Boolean,
     lines: List<Utterance>,
     pendingIds: Set<String> = emptySet(),
+    skeletonIds: Set<String> = emptySet(),
     liveId: String? = null,
     listState: LazyListState,
     focusedIndex: Int,
@@ -396,6 +397,7 @@ fun LyricsPanel(
                         val distance = if (focusedIndex < 0) 3 else abs(index - focusedIndex)
                         val isActive = index == focusedIndex
                         val isPending = u.id in pendingIds
+                        val isSkeleton = u.id in skeletonIds
                         val isLive = u.id == liveId
                         val text = u.text(if (english) Lang.EN else Lang.ZH)
                         LyricRow(
@@ -408,6 +410,7 @@ fun LyricsPanel(
                             ttsHint = ttsEnabled && isActive && !isPending,
                             placeholder = isPending && text.isBlank(),
                             provisional = isPending,
+                            skeleton = isSkeleton,
                             live = isLive,
                             // DeepSeek already splits long speech into sentences;
                             // never hide a finished sentence behind an ellipsis.
@@ -485,6 +488,7 @@ private fun LyricRow(
     modifier: Modifier = Modifier,
     placeholder: Boolean = false,
     provisional: Boolean = false,
+    skeleton: Boolean = false,
     live: Boolean = false,
     maxLines: Int = 5,
     onClick: () -> Unit,
@@ -535,7 +539,7 @@ private fun LyricRow(
     ) {
         val value: AnnotatedString? = if (placeholder) null else annotated
         if (live && value != null) {
-            // Partial Vosk text changes every few chunks; animating each update
+            // Live placeholders change every few chunks; animating each update
             // would flicker, so the live source line is drawn directly.
             LyricContent(value, textColor, amount, strokePx, maxLines, textStyle)
         } else {
@@ -557,7 +561,11 @@ private fun LyricRow(
                             .height(placeholderHeight),
                         contentAlignment = Alignment.Center,
                     ) {
-                        BufferDots(color = TextMid.copy(alpha = 0.90f))
+                        if (skeleton) {
+                            SkeletonBars(color = TextMid.copy(alpha = 0.72f))
+                        } else {
+                            BufferDots(color = TextMid.copy(alpha = 0.90f))
+                        }
                     }
                 } else {
                     LyricContent(content, textColor, amount, strokePx, maxLines, textStyle)
@@ -628,6 +636,40 @@ private fun BufferDots(color: Color, modifier: Modifier = Modifier) {
                     .size(5.dp)
                     .graphicsLayer { alpha = 0.28f + 0.62f * wave }
                     .background(color, CircleShape),
+            )
+        }
+    }
+}
+
+/** Gray skeleton blocks shown while DeepSeek ASR is working. */
+@Composable
+private fun SkeletonBars(color: Color, modifier: Modifier = Modifier) {
+    val transition = rememberInfiniteTransition(label = "skeleton")
+    val phase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1100, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "skeletonPhase",
+    )
+    val widths = listOf(22.dp, 38.dp, 28.dp, 16.dp)
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        widths.forEachIndexed { index, width ->
+            val wave = 0.5f + 0.5f * kotlin.math.sin(
+                (phase * 2f * kotlin.math.PI.toFloat()) - index * 0.75f,
+            )
+            Box(
+                Modifier
+                    .width(width)
+                    .height(7.dp)
+                    .graphicsLayer { alpha = 0.34f + 0.46f * wave }
+                    .background(color, RoundedCornerShape(4.dp)),
             )
         }
     }

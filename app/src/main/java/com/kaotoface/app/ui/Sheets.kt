@@ -904,7 +904,7 @@ fun SettingsSheet(
         }
         Spacer(Modifier.height(6.dp))
         Text(
-            "密钥只保存在本机。Vosk 在本机做预览；句末音频会上传 DeepSeek ASR 识别，文字用于翻译。",
+            "密钥只保存在本机。本地只做 VAD 切句/预录；句末音频会上传 DeepSeek ASR 识别，文字用于翻译。",
             color = TextLo.copy(alpha = 0.8f),
             fontFamily = Han,
             fontSize = 9.sp,
@@ -1084,7 +1084,7 @@ fun SettingsSheet(
                 letterSpacing = 0.6.sp,
             )
             Text(
-                "离线识别 Vosk · DeepSeek 翻译 · 局域网直连",
+                "VAD 切句 · DeepSeek ASR/翻译 · 局域网直连",
                 color = TextLo.copy(alpha = 0.7f),
                 fontFamily = Han,
                 fontSize = 9.sp,

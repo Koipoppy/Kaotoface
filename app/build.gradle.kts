@@ -21,8 +21,8 @@ android {
         // Version policy: patch +1 each shipped iteration, carry at ten:
         // 0.0.2 -> 0.0.3 ... 0.0.9 -> 0.1.0 ... 0.9.9 -> 1.0.0.
         // versionCode always increments by one with each release.
-        versionCode = 9
-        versionName = "0.0.9"
+        versionCode = 10
+        versionName = "0.1.0"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
@@ -99,8 +99,6 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
-    // On-device streaming speech recognition: English + Mandarin
-    implementation("com.alphacephei:vosk-android:0.3.47")
 
     testImplementation("junit:junit:4.13.2")
 }

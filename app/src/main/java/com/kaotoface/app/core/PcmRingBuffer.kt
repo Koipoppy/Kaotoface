@@ -2,7 +2,7 @@ package com.kaotoface.app.core
 
 /**
  * Absolute-byte PCM history used to re-decode a whole utterance. The microphone
- * feed is continuous, so the pre-roll before the first Vosk partial is still
+ * feed is continuous, so the pre-roll before the first speech trigger is still
  * available here even though the streaming recognizer already consumed it.
  */
 class PcmRingBuffer(capacityBytes: Int) {

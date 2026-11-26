@@ -26,13 +26,14 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.sqrt
 
 /**
- * Owns the whole live session: microphone, dual Vosk streams, LLM adjudication,
- * local room relay and the persisted timeline.
+ * Owns the whole live session: microphone, local VAD segmentation, DeepSeek
+ * ASR/translation, local room relay and the persisted timeline.
  */
 class SessionEngine(
     private val context: Context,
@@ -59,37 +60,19 @@ class SessionEngine(
     private var records: List<DiscussionRecord> = emptyList()
     private var currentRecordId: String? = null
     private val segments = Channel<Segment>(Channel.UNLIMITED)
-    private val groupQueue = Channel<GroupSnapshot>(Channel.UNLIMITED)
+    private val asrQueue = Channel<UtteranceAudio>(Channel.UNLIMITED)
+    private val asrPending = AtomicInteger(0)
 
     private var prepJob: Job? = null
     private var demoJob: Job? = null
-    private var debounceJob: Job? = null
     private var audio: AudioCapture? = null
-    private var dual: VoskDual? = null
+    private var vad: UtteranceVad? = null
     private var tts: TtsPlayer? = null
     private var roomHost: RoomHost? = null
     private var roomClient: RoomClient? = null
     private var joinJob: Job? = null
     private var lastJudgeSignature: String = ""
     private var lastJudgeAt: Long = 0L
-
-    // Streaming Vosk candidates. The live line is the currently spoken text;
-    // frozen lines stay in UiState.pending until DeepSeek returns.
-    private var liveEn = ""
-    private var liveZh = ""
-    private var groupEn = ""
-    private var groupZh = ""
-    private var groupConfEn = 0f
-    private var groupConfZh = 0f
-    private var groupId: String? = null
-    private var groupStartedAt = 0L
-    private var lastPartialAt = 0L
-
-    // Raw PCM history lets the final pass restart before the first Vosk partial.
-    private val pcmRing = PcmRingBuffer(AudioCapture.SAMPLE_RATE * 2 * RING_SECONDS)
-    private val groupLock = Any()
-    private var utteranceStartByte = -1L
-    private var utteranceEndByte = -1L
 
     init {
         val stored = recordsStore.load()
@@ -137,15 +120,16 @@ class SessionEngine(
             }
         }
         scope.launch {
-            for (snapshot in groupQueue) {
+            for (utterance in asrQueue) {
                 try {
-                    processGroup(snapshot)
+                    processUtterance(utterance)
                 } catch (ce: CancellationException) {
                     throw ce
                 } catch (t: Throwable) {
-                    Log.w(TAG, "group failed", t)
-                    removePending(snapshot.id)
-                    _state.update { it.copy(error = "翻译流程出错：${t.message ?: "未知错误"}") }
+                    Log.w(TAG, "ASR failed", t)
+                    removePending(utterance.id)
+                    asrPending.updateAndGet { (it - 1).coerceAtLeast(0) }
+                    _state.update { it.copy(error = "识别流程出错：${t.message ?: "未知错误"}") }
                 }
             }
         }
@@ -183,8 +167,8 @@ class SessionEngine(
         _state.update {
             it.copy(
                 phase = EnginePhase.PREPARING,
-                prepareProgress = 0f,
-                prepareLabel = "正在准备语音引擎",
+                prepareProgress = 0.2f,
+                prepareLabel = "正在启动语音识别",
                 error = null,
                 demo = false,
             )
@@ -192,19 +176,13 @@ class SessionEngine(
         TranslationService.start(context)
         prepJob = scope.launch {
             try {
-                val dirs = ModelInstaller.ensure(context) { p, label ->
-                    _state.update { it.copy(prepareProgress = p * 0.72f, prepareLabel = label) }
-                }
-                ensureRecognizers(dirs) { p, label ->
-                    _state.update { it.copy(prepareProgress = 0.72f + p * 0.28f, prepareLabel = label) }
-                }
-                coroutineContext.ensureActive()
-                val recognizers = dual ?: error("语音模型未就绪")
+                val segmenter = UtteranceVad(
+                    onSpeechStart = ::onSpeechStart,
+                    onSpeechCancel = ::onSpeechCancel,
+                    onUtterance = ::onUtterance,
+                )
                 val capture = AudioCapture(
-                    onAudio = { bytes, len ->
-                        pcmRing.append(bytes, len)
-                        recognizers.feed(bytes, len)
-                    },
+                    onAudio = { bytes, len -> segmenter.feed(bytes, len) },
                     onLevel = { level -> _level.value = level },
                     onError = { message ->
                         _state.update { it.copy(error = message) }
@@ -212,6 +190,7 @@ class SessionEngine(
                     },
                 )
                 capture.start()
+                vad = segmenter
                 audio = capture
                 _state.update {
                     it.copy(
@@ -222,7 +201,7 @@ class SessionEngine(
                 }
                 roomHost?.setListening(true)
                 _state.update { it.copy(guestMicOn = roomClient != null) }
-                Log.i(TAG, "session listening")
+                Log.i(TAG, "session listening (VAD)")
             } catch (ce: CancellationException) {
                 _state.update { it.copy(phase = EnginePhase.IDLE, prepareLabel = "") }
                 throw ce
@@ -245,9 +224,10 @@ class SessionEngine(
         prepJob = null
         demoJob?.cancel()
         demoJob = null
-        clearTransient()
+        vad = null
         audio?.stop()
         audio = null
+        clearTransient()
         tts?.stop()
         _level.value = 0f
         _state.update {
@@ -264,267 +244,91 @@ class SessionEngine(
         Log.i(TAG, "session stopped")
     }
 
-    private suspend fun ensureRecognizers(
-        dirs: ModelInstaller.Dirs,
-        onProgress: (Float, String) -> Unit,
-    ) {
-        val current = dual
-        if (current?.ready == true) {
-            onProgress(1f, "语音引擎就绪")
-            return
+    private fun onSpeechStart() {
+        if (_state.value.live != null) return
+        val id = UUID.randomUUID().toString()
+        _state.update {
+            it.copy(
+                live = PendingLine(
+                    id = id,
+                    source = Lang.EN,
+                    text = "",
+                    skeleton = true,
+                ),
+            )
         }
-        current?.release()
-        val fresh = VoskDual(onPartial = ::onPartial, onFinal = ::onFinal)
-        fresh.load(dirs.en, dirs.zh, onProgress)
-        dual = fresh
     }
 
-    private fun onPartial(lang: Lang, text: String) {
-        val clean = if (lang == Lang.ZH) ChineseTextNormalizer.normalize(text) else text.trim()
-        if (clean.isEmpty()) return
-        synchronized(groupLock) {
-            if (lang == Lang.EN) liveEn = clean else liveZh = clean
-            // The first partial marks the utterance. Keep the ring position a
-            // little before it so a fresh decode can recover the swallowed onset.
-            if (groupId == null && utteranceStartByte < 0) {
-                val total = pcmRing.totalBytes()
-                utteranceStartByte = (total - PRE_ROLL_BYTES).coerceAtLeast(0)
-            }
-            // The group is already frozen and has a target buffer; don't let a
-            // trailing partial rewrite it. The next utterance starts a new live line.
-            if (groupId != null) return
-        }
-        val choice = chooseSource(liveEn, liveZh, 0f, 0f, preferredSource()) ?: return
-        val current = _state.value.live
-        if (current != null && current.source == choice.first && current.text == choice.second) return
-        val now = System.currentTimeMillis()
-        if (now - lastPartialAt < 90) return
-        lastPartialAt = now
-        val line = current?.copy(source = choice.first, text = choice.second)
-            ?: PendingLine(
-                id = UUID.randomUUID().toString(),
-                source = choice.first,
-                text = choice.second,
-                createdAt = now,
-            )
-        _state.update { it.copy(live = line) }
+    private fun onSpeechCancel() {
+        _state.update { it.copy(live = null) }
     }
 
-    private fun onFinal(lang: Lang, text: String, confidence: Float) {
-        val clean = if (lang == Lang.ZH) ChineseTextNormalizer.normalize(text) else text.trim()
-        if (clean.isEmpty()) return
-        val now = System.currentTimeMillis()
-        var firstId: String? = null
-        var firstCreatedAt = now
-        var choice: Pair<Lang, String>? = null
-        synchronized(groupLock) {
-            if (lang == Lang.EN) {
-                groupEn = appendFinal(groupEn, clean, Lang.EN)
-                groupConfEn = confidence
-            } else {
-                groupZh = appendFinal(groupZh, clean, Lang.ZH)
-                groupConfZh = confidence
-            }
-            if (utteranceStartByte < 0) {
-                utteranceStartByte = (pcmRing.totalBytes() - PRE_ROLL_BYTES).coerceAtLeast(0)
-            }
-            utteranceEndByte = pcmRing.totalBytes()
-            if (groupId == null) {
-                groupStartedAt = now
-                val live = _state.value.live
-                firstId = live?.id ?: UUID.randomUUID().toString()
-                firstCreatedAt = live?.createdAt ?: now
-                groupId = firstId
-                liveEn = ""
-                liveZh = ""
-            }
-            choice = chooseSource(groupEn, groupZh, groupConfEn, groupConfZh, preferredSource())
-        }
-        val chosen = choice ?: return
-        val id = firstId ?: groupId ?: return
-        if (firstId != null) {
-            val pendingLine = PendingLine(
-                id = id,
-                source = chosen.first,
-                text = chosen.second,
-                createdAt = firstCreatedAt,
+    private fun onUtterance(pcm: ByteArray) {
+        val live = _state.value.live
+        val id = live?.id ?: UUID.randomUUID().toString()
+        val pending = PendingLine(
+            id = id,
+            source = Lang.EN,
+            text = "",
+            createdAt = live?.createdAt ?: System.currentTimeMillis(),
+            skeleton = true,
+        )
+        _state.update {
+            it.copy(
+                live = null,
+                pending = it.pending + pending,
             )
-            _state.update {
-                it.copy(
-                    live = null,
-                    pending = it.pending + pendingLine,
+        }
+        asrPending.incrementAndGet()
+        asrQueue.trySend(UtteranceAudio(id, pcm))
+    }
+
+    private suspend fun processUtterance(utterance: UtteranceAudio) {
+        try {
+            val asr = withContext(Dispatchers.IO) {
+                translator.transcribe(settingsStore.state.value, utterance.pcm)
+            }
+            val text = asr.getOrNull()?.trim().orEmpty()
+            if (text.isBlank()) {
+                val failed = Utterance(
+                    id = utterance.id,
+                    en = "(speech not recognized)",
+                    zh = "（未识别到语音）",
+                    source = Lang.EN,
+                    failed = true,
                 )
+                addLine(failed, remote = false, replacingPendingId = utterance.id)
+                _state.update { it.copy(notice = "这一句未识别：${asr.exceptionOrNull()?.message ?: "空结果"}") }
+                return
             }
-        } else {
-            // The other Vosk stream finalised within the same window. Keep one
-            // buffer row and grow its source candidate.
+            val lang = inferLang(text)
+            val clean = if (lang == Lang.ZH) ChineseTextNormalizer.normalize(text) else text
             _state.update { st ->
                 st.copy(
                     pending = st.pending.map {
-                        if (it.id == id) it.copy(source = chosen.first, text = chosen.second) else it
+                        if (it.id == utterance.id) {
+                            it.copy(source = lang, text = clean, skeleton = false)
+                        } else it
                     },
                 )
             }
-        }
-        scheduleDebounce()
-    }
-
-    private fun appendFinal(existing: String, text: String, lang: Lang): String = when {
-        existing.isBlank() -> text
-        text.isBlank() -> existing
-        existing.endsWith(text) -> existing
-        text.startsWith(existing) -> text
-        lang == Lang.EN -> "$existing $text"
-        else -> existing + text
-    }
-
-    private fun scheduleDebounce() {
-        val waitMs = synchronized(groupLock) {
-            if (groupId == null) return
-            val elapsed = System.currentTimeMillis() - groupStartedAt
-            if (elapsed >= GROUP_MAX_MS) 0L else GROUP_IDLE_MS
-        }
-        debounceJob?.cancel()
-        debounceJob = scope.launch {
-            delay(waitMs)
-            endGroup()
-        }
-    }
-
-    private suspend fun endGroup() {
-        val snapshot = synchronized(groupLock) {
-            val id = groupId ?: return
-            val s = GroupSnapshot(
-                id = id,
-                en = groupEn,
-                zh = groupZh,
-                enConfidence = groupConfEn,
-                zhConfidence = groupConfZh,
-                startByte = utteranceStartByte,
-                endByte = utteranceEndByte,
+            Log.i(TAG, "DeepSeek ASR [$lang]: $clean")
+            segments.send(
+                Segment(
+                    en = if (lang == Lang.EN) clean else "",
+                    zh = if (lang == Lang.ZH) clean else "",
+                    id = utterance.id,
+                ),
             )
-            groupId = null
-            groupEn = ""
-            groupZh = ""
-            groupConfEn = 0f
-            groupConfZh = 0f
-            groupStartedAt = 0L
-            utteranceStartByte = -1L
-            utteranceEndByte = -1L
-            liveEn = ""
-            liveZh = ""
-            debounceJob = null
-            s
+        } finally {
+            asrPending.updateAndGet { (it - 1).coerceAtLeast(0) }
         }
-        // Re-decode can take different amounts of time per sentence; a single
-        // consumer keeps the timeline in speech order.
-        groupQueue.send(snapshot)
-    }
-
-    private suspend fun processGroup(snapshot: GroupSnapshot) {
-        val en = snapshot.en
-        val zh = snapshot.zh
-        if (en.isBlank() && zh.isBlank()) {
-            removePending(snapshot.id)
-            return
-        }
-        val pcm = if (snapshot.startByte >= 0 && snapshot.endByte > snapshot.startByte) {
-            pcmRing.snapshot(snapshot.startByte, snapshot.endByte)
-        } else null
-        if (pcm != null && pcm.isNotEmpty()) {
-            val settings = settingsStore.state.value
-            val asr = withContext(Dispatchers.IO) {
-                translator.transcribe(settings, pcm)
-            }
-            val text = asr.getOrNull()?.trim().orEmpty()
-            if (text.isNotBlank()) {
-                val lang = inferLang(text)
-                val asrText = if (lang == Lang.ZH) ChineseTextNormalizer.normalize(text) else text
-                val asrEn = if (lang == Lang.EN) asrText else ""
-                val asrZh = if (lang == Lang.ZH) asrText else ""
-                _state.update { st ->
-                    st.copy(
-                        pending = st.pending.map {
-                            if (it.id == snapshot.id) it.copy(source = lang, text = asrText) else it
-                        },
-                    )
-                }
-                Log.i(TAG, "DeepSeek ASR [$lang]: $asrText")
-                segments.send(Segment(asrEn, asrZh, snapshot.id))
-                return
-            }
-            Log.w(TAG, "DeepSeek ASR failed, falling back to Vosk: ${asr.exceptionOrNull()?.message}")
-        }
-        val chosen = chooseSource(
-            en,
-            zh,
-            snapshot.enConfidence,
-            snapshot.zhConfidence,
-            preferredSource(),
-        )
-        if (chosen == null) {
-            removePending(snapshot.id)
-            return
-        }
-        // Keep the full dual candidates as a fallback path.
-        _state.update { st ->
-            st.copy(
-                pending = st.pending.map {
-                    if (it.id == snapshot.id) it.copy(source = chosen.first, text = chosen.second) else it
-                },
-            )
-        }
-        Log.i(TAG, "Vosk fallback group=[$en | $zh]")
-        segments.send(Segment(en, zh, snapshot.id))
     }
 
     private fun inferLang(text: String): Lang {
         val cjk = countCjk(text)
         val latin = countLatin(text)
         return if (cjk > 0 && cjk >= latin) Lang.ZH else Lang.EN
-    }
-
-    private fun preferredSource(): Lang? =
-        _state.value.pending.lastOrNull()?.source ?: _state.value.lines.lastOrNull()?.source
-
-    /**
-     * Vosk gives us two candidates for every chunk. At final time we use its
-     * word confidence to choose which one is likely real speech; the script
-     * ratio and the previous line are fallbacks (partials have no confidence).
-     * DeepSeek still makes the authoritative choice.
-     */
-    private fun chooseSource(
-        en: String,
-        zh: String,
-        enConfidence: Float,
-        zhConfidence: Float,
-        preferred: Lang?,
-    ): Pair<Lang, String>? {
-        val e = en.trim()
-        val z = zh.trim()
-        if (e.isEmpty() && z.isEmpty()) return null
-        if (z.isEmpty()) return Lang.EN to e
-        if (e.isEmpty()) return Lang.ZH to z
-        val eCjk = countCjk(e)
-        val zCjk = countCjk(z)
-        val eLatin = countLatin(e)
-        val zLatin = countLatin(z)
-        // A real amount/number is strong evidence. "standby to syria" must not
-        // beat "390元" merely because it is a fluent-looking English phrase.
-        val zhAmount = LanguageHeuristics.hasAmount(z)
-        val enAmount = LanguageHeuristics.hasAmount(e)
-        if (zhAmount && !enAmount) return Lang.ZH to z
-        if (enAmount && !zhAmount) return Lang.EN to e
-        if (enConfidence > zhConfidence + 0.08f) return Lang.EN to e
-        if (zhConfidence > enConfidence + 0.08f) return Lang.ZH to z
-        // Current-sentence script evidence comes before the previous line's
-        // language. Otherwise a Chinese sentence after English is forced back
-        // into English even when the Chinese candidate is clearly CJK.
-        if (zCjk > eCjk + 1) return Lang.ZH to z
-        if (eLatin > zLatin + 1) return Lang.EN to e
-        if (preferred == Lang.EN) return Lang.EN to e
-        if (preferred == Lang.ZH) return Lang.ZH to z
-        return if (z.length >= e.length) Lang.ZH to z else Lang.EN to e
     }
 
     private fun countCjk(text: String): Int = text.count {
@@ -543,21 +347,6 @@ class SessionEngine(
     }
 
     private fun clearTransient() {
-        debounceJob?.cancel()
-        debounceJob = null
-        synchronized(groupLock) {
-            groupId = null
-            groupEn = ""
-            groupZh = ""
-            groupConfEn = 0f
-            groupConfZh = 0f
-            groupStartedAt = 0L
-            utteranceStartByte = -1L
-            utteranceEndByte = -1L
-            liveEn = ""
-            liveZh = ""
-        }
-        pcmRing.clear()
         _state.update { it.copy(pending = emptyList(), live = null) }
     }
 
@@ -772,7 +561,6 @@ class SessionEngine(
         audio?.paused = true
         val accepted = player.speak(text, lang) {
             audio?.paused = false
-            dual?.reset()
         }
         if (!accepted) {
             audio?.paused = false
@@ -819,20 +607,17 @@ class SessionEngine(
         }
         demoJob = scope.launch {
             try {
-                val dirs = ModelInstaller.ensure(context) { p, label ->
-                    _state.update { it.copy(prepareProgress = p * 0.7f, prepareLabel = label) }
-                }
-                ensureRecognizers(dirs) { p, label ->
-                    _state.update { it.copy(prepareProgress = 0.7f + p * 0.3f, prepareLabel = label) }
-                }
-                coroutineContext.ensureActive()
-                val recognizers = dual ?: error("语音模型未就绪")
                 val wav = withContext(Dispatchers.IO) {
                     context.assets.open("demo/conversation.wav").use { parseWav(it.readBytes()) }
                 } ?: error("演示音频不可用")
                 if (wav.sampleRate != AudioCapture.SAMPLE_RATE || wav.channels != 1 || wav.bits != 16) {
                     error("演示音频格式不正确")
                 }
+                val segmenter = UtteranceVad(
+                    onSpeechStart = ::onSpeechStart,
+                    onSpeechCancel = ::onSpeechCancel,
+                    onUtterance = ::onUtterance,
+                )
                 _state.update {
                     it.copy(
                         phase = EnginePhase.LISTENING,
@@ -847,23 +632,20 @@ class SessionEngine(
                 while (offset < wav.pcm.size && isActive) {
                     val n = minOf(chunkSize, wav.pcm.size - offset)
                     val chunk = wav.pcm.copyOfRange(offset, offset + n)
-                    pcmRing.append(chunk, n)
-                    recognizers.feed(chunk, n)
+                    segmenter.feed(chunk, n)
                     _level.value = pcmLevel(chunk)
                     offset += n
                     delay(100)
                 }
-                repeat(14) {
+                repeat(16) {
                     if (!isActive) return@repeat
-                    val silence = ByteArray(chunkSize)
-                    pcmRing.append(silence, silence.size)
-                    recognizers.feed(silence, silence.size)
+                    segmenter.feed(ByteArray(chunkSize), chunkSize)
                     delay(100)
                 }
-                recognizers.finishAll()
+                segmenter.flush()
                 delay(900)
                 var waited = 0
-                while (_state.value.translating > 0 && waited < 12000 && isActive) {
+                while ((asrPending.get() > 0 || _state.value.translating > 0) && waited < 20000 && isActive) {
                     delay(250)
                     waited += 250
                 }
@@ -1124,8 +906,6 @@ class SessionEngine(
     fun shutdown() {
         stopSession()
         leaveRoom()
-        dual?.release()
-        dual = null
         tts?.shutdown()
         tts = null
         scope.cancel()
@@ -1152,15 +932,8 @@ class SessionEngine(
 
     private data class Segment(val en: String, val zh: String, val id: String)
 
-    private data class GroupSnapshot(
-        val id: String,
-        val en: String,
-        val zh: String,
-        val enConfidence: Float,
-        val zhConfidence: Float,
-        val startByte: Long,
-        val endByte: Long,
-    )
+    private data class UtteranceAudio(val id: String, val pcm: ByteArray)
+
     private data class DemoWav(val pcm: ByteArray, val sampleRate: Int, val channels: Int, val bits: Int)
 
     private fun parseWav(bytes: ByteArray): DemoWav? {
@@ -1198,10 +971,5 @@ class SessionEngine(
 
     companion object {
         private const val TAG = "KaoEngine"
-        private const val RING_SECONDS = 12
-        private const val GROUP_IDLE_MS = 700L
-        private const val GROUP_MAX_MS = 2500L
-        private const val PRE_ROLL_BYTES = AudioCapture.SAMPLE_RATE * 2 * 8 / 10 // 800ms
-        private const val MIN_DECODE_BYTES = AudioCapture.SAMPLE_RATE * 2 / 4 // 250ms
     }
 }

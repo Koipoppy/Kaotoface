@@ -50,7 +50,7 @@ data class DiscussionRecord(
 )
 
 /**
- * A Vosk candidate that is not finished yet. It lives only in the UI and in
+ * A speech utterance that has no ASR text yet. It lives only in the UI and in
  * memory: it is never written to a record or broadcast to a room. The target
  * language side is blank on purpose, so the lyric panel can show a buffer there
  * while DeepSeek proofreads and translates.
@@ -60,6 +60,8 @@ data class PendingLine(
     val source: Lang,
     val text: String,
     val createdAt: Long = System.currentTimeMillis(),
+    /** No ASR text yet; the UI draws gray skeleton blocks instead. */
+    val skeleton: Boolean = false,
 ) {
     fun asUtterance(): Utterance = Utterance(
         id = id,
@@ -98,9 +100,9 @@ data class UiState(
     val prepareProgress: Float = 0f,
     val prepareLabel: String = "",
     val lines: List<Utterance> = emptyList(),
-    /** Frozen Vosk candidates waiting for DeepSeek; not part of records. */
+    /** Frozen utterances waiting for DeepSeek ASR; not part of records. */
     val pending: List<PendingLine> = emptyList(),
-    /** The current in-progress Vosk candidate; not part of records. */
+    /** The current in-progress utterance; not part of records. */
     val live: PendingLine? = null,
     val translating: Int = 0,
     val mode: DisplayMode = DisplayMode.LANDSCAPE,

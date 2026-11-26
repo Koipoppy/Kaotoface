@@ -108,9 +108,8 @@ fun KaoToFaceScreen(
     val snackbar = remember { SnackbarHostState() }
     val view = LocalView.current
     val configuration = LocalConfiguration.current
-    // Completed lines first, then frozen Vosk candidates, then the live Vosk
-    // candidate. Pending/live rows intentionally have only the source half;
-    // the other panel draws a buffer until DeepSeek returns.
+    // Completed lines first, then the current utterance. Until DeepSeek ASR
+    // returns, the row has no text and both panels draw gray skeleton blocks.
     val displayLines = remember(state.lines, state.pending, state.live) {
         buildList {
             addAll(state.lines)
@@ -120,6 +119,10 @@ fun KaoToFaceScreen(
     }
     val pendingIds = remember(state.pending, state.live) {
         (state.pending.map { it.id } + listOfNotNull(state.live?.id)).toSet()
+    }
+    val skeletonIds = remember(state.pending, state.live) {
+        (state.pending.filter { it.skeleton }.map { it.id } +
+            listOfNotNull(state.live?.takeIf { it.skeleton }?.id)).toSet()
     }
     val liveId = state.live?.id
     val sync = rememberLyricSync(
@@ -341,6 +344,7 @@ fun KaoToFaceScreen(
                 english = english,
                 lines = displayLines,
                 pendingIds = pendingIds,
+                skeletonIds = skeletonIds,
                 liveId = liveId,
                 listState = listState,
                 focusedIndex = sync.focusedIndex,

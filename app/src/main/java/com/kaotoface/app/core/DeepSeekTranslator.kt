@@ -121,7 +121,7 @@ class DeepSeekTranslator {
 
     /**
      * DeepSeek's file ASR. The API auto-detects the language and returns plain
-     * text; it is not streaming. We use it for the final utterance while Vosk
+     * text; it is not streaming. We use it for the final utterance after VAD
      * remains a local preview/segmenter.
      */
     fun transcribe(settings: AppSettings, pcm: ByteArray): Result<String> {

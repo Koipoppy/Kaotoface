@@ -2,13 +2,6 @@
 
 颜颜 KaoToFace 使用了以下开源资源。分发本 App 或其源码时请保留本文件。
 
-## Vosk（离线语音识别）
-
-- 项目：https://github.com/alphacep/vosk-api
-- 许可：Apache License 2.0
-- 使用方式：`com.alphacephei:vosk-android:0.3.47`，内置 `vosk-model-small-en-us-0.15` 与
-  `vosk-model-small-cn-0.22` 两个模型。
-
 ## 字体
 
 ### Jost
